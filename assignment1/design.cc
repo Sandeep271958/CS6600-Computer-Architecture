@@ -35,18 +35,37 @@ struct Latch {
 };
 
 bool IsControl(Opcode opcode) {
-  (void)opcode;
-  return false;  // TODO
+  switch (opcode){
+    // case Opcode::kNop: (MAYBE, NOT SURE)
+    case Opcode::kBne:
+    case Opcode::kBeq:
+    case Opcode::kJ:
+    case Opcode::kHalt:
+      return true;
+  }
+  return false; 
 }
 
 bool ReadsRs1(Opcode opcode) {
-  (void)opcode;
-  return false;  // TODO
+  switch (opcode){
+    case Opcode::kJ:
+    case Opcode::kHalt:
+    case Opcode::kNop:
+      return false;
+  }
+  return true;
 }
 
 bool ReadsRs2(Opcode opcode) {
-  (void)opcode;
-  return false;  // TODO
+  switch (opcode){
+    case Opcode::kAddi:
+    case Opcode::kLw:
+    case Opcode::kJ:
+    case Opcode::kHalt:
+    case Opcode::kNop:
+      return false;
+  }
+  return true;
 }
 
 class Alu : public TrackedUnit {
