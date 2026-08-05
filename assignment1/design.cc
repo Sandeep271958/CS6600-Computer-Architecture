@@ -380,6 +380,11 @@ class Core {
       next_ex_mem_.result = alu_->Run(id_ex_.control.alu_op, id_ex_.first, id_ex_.second);
     }
 
+    else if (instruction.opcode == Opcode::kLw || instruction.opcode == Opcode::kSw) {
+      next_ex_mem_.result = alu_->Run(AluOp::kAdd, id_ex_.first,
+                                       static_cast<std::uint32_t>(instruction.immediate));
+    }
+
     else if (instruction.opcode == Opcode::kBeq) {
       Redirect(id_ex_.first == id_ex_.second
                    ? static_cast<std::uint32_t>(instruction.immediate)
@@ -398,6 +403,7 @@ class Core {
     
     else if (instruction.opcode == Opcode::kHalt) {
       front_action_ = FrontAction::kStop;
+      next_halt_pending_ = true;
     }
   }
 
@@ -415,9 +421,7 @@ class Core {
 
     const Instruction& instruction = if_id_.instruction;
 
-    Control control = main_control_->Decode(instruction.opcode);
-
-    if(hazard_control_->MustStall(if_id_, id_ex_, ex_mem_)) {
+    if(if_id_.valid && hazard_control_->MustStall(if_id_, id_ex_, ex_mem_)) {
       front_action_ = FrontAction::kHold;
       snapshots_[StageIndex(StageRole::kDecode)].action = "STALL";
       machine_->AddDataStall();
@@ -426,7 +430,7 @@ class Core {
 
     next_id_ex_.valid = true;
     next_id_ex_.instruction = instruction;
-    next_id_ex_.control = control;
+    next_id_ex_.control =  main_control_->Decode(instruction.opcode);
     next_id_ex_.first = machine_->ReadRegister(instruction.rs1);
     next_id_ex_.second = machine_->ReadRegister(instruction.rs2);
 
@@ -444,6 +448,7 @@ class Core {
       next_pc_ = redirect_pc_;
       next_if_id_ = Latch();
       snapshot.action = "REDIRECT";
+      machine_->AddControlStall();
       return;
     }
 
@@ -458,6 +463,7 @@ class Core {
       next_pc_ = pc_;
       next_if_id_ = Latch();
       snapshot.action = "BUBBLE";
+      machine_->AddControlStall();
       return;
     }
 
