@@ -79,13 +79,13 @@ class Alu : public TrackedUnit {
       case AluOp::kAdd:
         return left + right;
       case AluOp::kSub:
-        return left - right;  // TODO
+        return left - right; 
       case AluOp::kAnd:
-        return left & right;  // TODO
+        return left & right; 
       case AluOp::kOr:
-        return left | right;  // TODO
+        return left | right; 
       case AluOp::kXor:
-        return left  ^right;  // TODO
+        return left  ^right; 
     }
     return 0;
   }
