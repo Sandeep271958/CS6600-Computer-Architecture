@@ -164,19 +164,42 @@ class HazardControl : public TrackedUnit {
   bool MustStall(const Latch& consumer, const Latch& id_ex,
                  const Latch& ex_mem) {
     Touch();
-    (void)consumer;
-    (void)id_ex;
-    (void)ex_mem;
-    return false;  // TODO
+
+    if (HasDependency(consumer.instruction.rs1,
+                      ReadsRs1(consumer.instruction.opcode),
+                      id_ex)) {
+      return true;
+    }
+
+    if (HasDependency(consumer.instruction.rs2,
+                      ReadsRs2(consumer.instruction.opcode),
+                      id_ex)) {
+      return true;
+    }
+
+    if (HasDependency(consumer.instruction.rs1,
+                      ReadsRs1(consumer.instruction.opcode),
+                      ex_mem)) {
+      return true;
+    }
+
+    if (HasDependency(consumer.instruction.rs2,
+                      ReadsRs2(consumer.instruction.opcode),
+                      ex_mem)) {
+      return true;
+    }
+
+    return false;
   }
 
  private:
   bool HasDependency(int source, bool source_is_used,
                      const Latch& producer) const {
-    (void)source;
-    (void)source_is_used;
-    (void)producer;
-    return false;  // TODO
+    if (!source_is_used) return false;
+    if (!producer.valid) return false;
+    if (!producer.control.reg_write) return false;
+    if (producer.instruction.rd == 0) return false;
+    return source == producer.instruction.rd;
   }
 };
 
