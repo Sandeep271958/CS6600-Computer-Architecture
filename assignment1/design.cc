@@ -164,19 +164,29 @@ class HazardControl : public TrackedUnit {
   bool MustStall(const Latch& consumer, const Latch& id_ex,
                  const Latch& ex_mem) {
     Touch();
-    (void)consumer;
-    (void)id_ex;
-    (void)ex_mem;
-    return false;  // TODO
+    
+    if (!consumer.valid) return false;
+
+    bool reads_rs1 = ReadsRs1(consumer.instruction.opcode);
+    bool reads_rs2 = ReadsRs2(consumer.instruction.opcode);
+
+    if (HasDependency(consumer.instruction.rs1, reads_rs1, id_ex)) return true;
+    if (HasDependency(consumer.instruction.rs2, reads_rs2, id_ex)) return true;
+
+    if (HasDependency(consumer.instruction.rs1, reads_rs1, ex_mem)) return true;
+    if (HasDependency(consumer.instruction.rs2, reads_rs2, ex_mem)) return true;
+
+    return false;
   }
 
  private:
   bool HasDependency(int source, bool source_is_used,
                      const Latch& producer) const {
-    (void)source;
-    (void)source_is_used;
-    (void)producer;
-    return false;  // TODO
+    
+    if (!source_is_used || source == 0) return false;
+
+    if (!producer.valid || !producer.control.reg_write) return false;
+    return source == producer.instruction.rd;  
   }
 };
 
@@ -398,9 +408,18 @@ class Core {
 
     const Instruction& instruction = if_id_.instruction;
 
+    Control control = main_control_->Decode(instruction.opcode);
+
+    if(hazard_control_->MustStall(if_id_, id_ex_, ex_mem_)) {
+      front_action_ = FrontAction::kHold;
+      snapshots_[StageIndex(StageRole::kDecode)].action = "STALL";
+      machine_->AddDataStall();
+      return;
+    }
+
     next_id_ex_.valid = true;
     next_id_ex_.instruction = instruction;
-    next_id_ex_.control = main_control_->Decode(instruction.opcode);
+    next_id_ex_.control = control;
     next_id_ex_.first = machine_->ReadRegister(instruction.rs1);
     next_id_ex_.second = machine_->ReadRegister(instruction.rs2);
 
