@@ -361,7 +361,18 @@ class Core {
 
     if (front_action_ == FrontAction::kRedirect || !if_id_.valid) return;
 
-    // TODO
+
+    const Instruction& instruction = if_id_.instruction;
+
+    next_id_ex_.valid = true;
+    next_id_ex_.instruction = instruction;
+    next_id_ex_.control = main_control_->Decode(instruction.opcode);
+    next_id_ex_.first = machine_->ReadRegister(instruction.rs1);
+    next_id_ex_.second = machine_->ReadRegister(instruction.rs2);
+
+    if (IsControl(instruction.opcode)) {
+      front_action_ = FrontAction::kStop;
+    }
   }
 
   void Fetch() {
