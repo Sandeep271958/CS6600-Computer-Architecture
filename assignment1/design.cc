@@ -323,7 +323,14 @@ class Core {
     if (!ex_mem_.valid) return;
 
     next_mem_wb_ = ex_mem_;
-    // TODO
+
+    if (ex_mem_.control.mem_read) {           // Load Instruction
+      next_mem_wb_.result = machine_->LoadWord(ex_mem_.result);
+    } 
+    
+    else if (ex_mem_.control.mem_write) {     // Store Instruction
+      machine_->StoreWord(ex_mem_.result, ex_mem_.store_value);
+    }
   }
 
   void Execute() {
