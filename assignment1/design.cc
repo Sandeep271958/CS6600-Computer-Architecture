@@ -339,9 +339,31 @@ class Core {
 
     const Instruction& instruction = id_ex_.instruction;
 
-    // TODO
+    if (instruction.opcode == Opcode::kAddi){
+      next_ex_mem_.result = alu_->Run(id_ex_.control.alu_op, id_ex_.first, instruction.immediate);
+    }
 
-    if (instruction.opcode == Opcode::kBeq) {
+    else if (instruction.opcode == Opcode::kAdd){
+      next_ex_mem_.result = alu_->Run(id_ex_.control.alu_op, id_ex_.first, id_ex_.second);
+    }
+    
+    else if (instruction.opcode == Opcode::kSub){
+      next_ex_mem_.result = alu_->Run(id_ex_.control.alu_op, id_ex_.first, id_ex_.second);
+    }
+
+    else if (instruction.opcode == Opcode::kAnd){
+      next_ex_mem_.result = alu_->Run(id_ex_.control.alu_op, id_ex_.first, id_ex_.second);
+    }
+
+    else if (instruction.opcode == Opcode::kXor){
+      next_ex_mem_.result = alu_->Run(id_ex_.control.alu_op, id_ex_.first, id_ex_.second);
+    }
+
+    else if (instruction.opcode == Opcode::kOr){
+      next_ex_mem_.result = alu_->Run(id_ex_.control.alu_op, id_ex_.first, id_ex_.second);
+    }
+
+    else if (instruction.opcode == Opcode::kBeq) {
       Redirect(id_ex_.first == id_ex_.second
                    ? static_cast<std::uint32_t>(instruction.immediate)
                    : instruction.pc + 4);
