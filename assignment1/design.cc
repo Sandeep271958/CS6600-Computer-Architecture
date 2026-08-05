@@ -346,7 +346,20 @@ class Core {
                    ? static_cast<std::uint32_t>(instruction.immediate)
                    : instruction.pc + 4);
     }
-    // TODO
+
+    else if (instruction.opcode == Opcode::kBne) {
+      Redirect(id_ex_.first != id_ex_.second
+                   ? static_cast<std::uint32_t>(instruction.immediate)
+                   : instruction.pc + 4);
+    }
+
+    else if (instruction.opcode == Opcode::kJ) {
+      Redirect(static_cast<std::uint32_t>(instruction.immediate));
+    }
+    
+    else if (instruction.opcode == Opcode::kHalt) {
+      front_action_ = FrontAction::kStop;
+    }
   }
 
   void Redirect(std::uint32_t new_pc) {
