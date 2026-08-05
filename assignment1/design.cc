@@ -4,6 +4,8 @@
 #include <memory>
 #include <string>
 
+#include <set>
+
 namespace pipesim {
 namespace {
 
@@ -103,24 +105,50 @@ class MainControl : public TrackedUnit {
         break;
 
       case Opcode::kAdd:
+        control.reg_write = true;
+        control.alu_op = AluOp::kAdd;
+        break;
       case Opcode::kSub:
+        control.reg_write = true;
+        control.alu_op = AluOp::kSub;
+        break;
       case Opcode::kAnd:
+        control.reg_write = true;
+        control.alu_op = AluOp::kAnd;
+        break;
       case Opcode::kOr:
+        control.reg_write = true;
+        control.alu_op = AluOp::kOr;
+        break;
       case Opcode::kXor:
-        break;  // TODO
+        control.reg_write = true;
+        control.alu_op = AluOp::kXor;
+        break;
 
       case Opcode::kLw:
-        break;  // TODO
+        control.reg_write = true;
+        control.mem_read = true;
+        control.use_immediate = true;
+        break;
 
       case Opcode::kSw:
-        break;  // TODO
+        control.mem_write = true;
+        control.use_immediate = true;
+        break;  
 
       case Opcode::kBeq:
+        control.use_immediate = true;
+        control.alu_op = AluOp::kSub;
+        break;
+        
       case Opcode::kBne:
-        break;  // TODO
+        control.use_immediate = true;
+        control.alu_op = AluOp::kSub;
+        break;
 
       case Opcode::kHalt:
-        break;  // TODO
+        control.halt = true;
+        break;
 
       case Opcode::kJ:
       case Opcode::kNop:
