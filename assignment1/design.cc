@@ -79,13 +79,13 @@ class Alu : public TrackedUnit {
       case AluOp::kAdd:
         return left + right;
       case AluOp::kSub:
-        return left - right; 
+        return 0;  // TODO
       case AluOp::kAnd:
-        return left & right; 
+        return 0;  // TODO
       case AluOp::kOr:
-        return left | right; 
+        return 0;  // TODO
       case AluOp::kXor:
-        return left  ^right; 
+        return 0;  // TODO
     }
     return 0;
   }
@@ -361,7 +361,6 @@ class Core {
 
     if (front_action_ == FrontAction::kRedirect || !if_id_.valid) return;
 
-
     const Instruction& instruction = if_id_.instruction;
 
     next_id_ex_.valid = true;
@@ -370,7 +369,7 @@ class Core {
     next_id_ex_.first = machine_->ReadRegister(instruction.rs1);
     next_id_ex_.second = machine_->ReadRegister(instruction.rs2);
 
-    if (IsControl(instruction.opcode)) {
+    if(IsControl(instruction.opcode)){
       front_action_ = FrontAction::kStop;
     }
   }
