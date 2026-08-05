@@ -182,11 +182,11 @@ class HazardControl : public TrackedUnit {
  private:
   bool HasDependency(int source, bool source_is_used,
                      const Latch& producer) const {
-    
-    if (!source_is_used || source == 0) return false;
-
-    if (!producer.valid || !producer.control.reg_write) return false;
-    return source == producer.instruction.rd;  
+    if (!source_is_used) return false;
+    if (!producer.valid) return false;
+    if (!producer.control.reg_write) return false;
+    if (producer.instruction.rd == 0) return false;
+    return source == producer.instruction.rd;
   }
 };
 
@@ -333,7 +333,14 @@ class Core {
     if (!ex_mem_.valid) return;
 
     next_mem_wb_ = ex_mem_;
-    // TODO
+
+    if (ex_mem_.control.mem_read) {           // Load Instruction
+      next_mem_wb_.result = machine_->LoadWord(ex_mem_.result);
+    } 
+    
+    else if (ex_mem_.control.mem_write) {     // Store Instruction
+      machine_->StoreWord(ex_mem_.result, ex_mem_.store_value);
+    }
   }
 
   void Execute() {
