@@ -34,14 +34,33 @@ std::unique_ptr<Processor> BuildDesign(Machine *machine) {
       cache::CacheRole::kL1I, "L1I",
       new cache::CacheController(cache::CacheRole::kL1I, config.l1i,
                                  machine->TransactionIds()));
-  builder.Connect(fetch, l1i, ConnectionType::kData);
-  (void)main_control;
-  (void)hazard_control;
 
-  NodeId id_issue =
+  const NodeId l2i = builder.AddCache(
+      cache::CacheRole::kL2I, "L2I",
+      new cache::CacheController(cache::CacheRole::kL2I, config.l2i,
+                                 machine->TransactionIds()));
+  builder.Connect(l1i, l2i, ConnectionType::kData);
+
+  builder.Connect(fetch, l1i, ConnectionType::kData);
+
+  builder.AddUnit(UnitRole::kMainControl, "main_control", main_control);
+  builder.AddUnit(UnitRole::kHazardControl, "hazard_control", hazard_control);
+
+  const NodeId l1d = builder.AddCache(
+      cache::CacheRole::kL1D, "L1D",
+      new cache::CacheController(cache::CacheRole::kL1D, config.l1d,
+                                 machine->TransactionIds()));
+
+  const NodeId l2d = builder.AddCache(
+      cache::CacheRole::kL2D, "L2D",
+      new cache::CacheController(cache::CacheRole::kL2D, config.l2d,
+                                 machine->TransactionIds()));
+  builder.Connect(l1d, l2d, ConnectionType::kData);
+
+  NodeId id_issue_node =
       builder.AddRegister(RegisterRole::kIfId, "id_issue",
                           new RegisterAdapter(core, RegisterKind::kIfId));
-  builder.Connect(fetch, id_issue, ConnectionType::kClockedData);
+  builder.Connect(fetch, id_issue_node, ConnectionType::kClockedData);
 
   NodeId add_node = builder.AddUnit(UnitRole::kAdd, "add", pipelines[0]);
   NodeId sub_node = builder.AddUnit(UnitRole::kSub, "sub", pipelines[1]);
@@ -51,5 +70,15 @@ std::unique_ptr<Processor> BuildDesign(Machine *machine) {
   NodeId control_node =
       builder.AddUnit(UnitRole::kControl, "control", pipelines[5]);
   NodeId agu_node = builder.AddUnit(UnitRole::kAgu, "agu", pipelines[6]);
+
+  builder.Connect(id_issue_node, add_node, ConnectionType::kClockedData);
+  builder.Connect(id_issue_node, sub_node, ConnectionType::kClockedData);
+  builder.Connect(id_issue_node, and_node, ConnectionType::kClockedData);
+  builder.Connect(id_issue_node, or_node, ConnectionType::kClockedData);
+  builder.Connect(id_issue_node, xor_node, ConnectionType::kClockedData);
+  builder.Connect(id_issue_node, control_node, ConnectionType::kClockedData);
+  builder.Connect(id_issue_node, agu_node, ConnectionType::kClockedData);
+
+  builder.Connect(agu_node, l1d, ConnectionType::kData);
 }
 } // namespace pipesim
