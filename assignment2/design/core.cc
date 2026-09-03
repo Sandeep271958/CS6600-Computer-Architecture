@@ -180,6 +180,33 @@ void Core::Decode() {
           snapshot.action = "DISPATCH";
           if_id_consumed_ = true;
 
+          if (target_unit == pipesim::ExecutionUnitKind::kControl) {
+            control_recognized_this_cycle_ = true;
+            bool taken = false;
+            std::uint32_t target = 0;
+            auto opcode = if_id_.fetched.instruction.opcode;
+
+            if (opcode == pipesim::Opcode::kBeq) {
+              std::uint32_t first = machine_->ReadRegister(if_id_.fetched.instruction.rs1);
+              std::uint32_t second = machine_->ReadRegister(if_id_.fetched.instruction.rs2);
+              taken = (first == second);
+              target = if_id_.fetched.instruction.immediate;
+            } else if (opcode == pipesim::Opcode::kBne) {
+              std::uint32_t first = machine_->ReadRegister(if_id_.fetched.instruction.rs1);
+              std::uint32_t second = machine_->ReadRegister(if_id_.fetched.instruction.rs2);
+              taken = (first != second);
+              target = if_id_.fetched.instruction.immediate;
+            } else if (opcode == pipesim::Opcode::kJ) {
+              taken = true;
+              target = if_id_.fetched.instruction.immediate;
+            }
+
+            if (taken) {
+              machine_->InvalidateFetchesAfter(if_id_.fetched.sequence);
+              next_pc_ = target;
+            }
+          }
+
           pipesim::ExecutionOperation op;
           op.sequence = if_id_.fetched.sequence;
           op.instruction = if_id_.fetched.instruction;
