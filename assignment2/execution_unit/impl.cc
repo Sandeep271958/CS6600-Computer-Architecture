@@ -29,14 +29,29 @@ ExecutionResult ExecutionPipeline::Impl::ResultFor(const ExecutionOperation &ope
     result.value = operation.lhs + operation.rhs;
     return result;
   case ExecutionUnitKind::kSub:
+    result.value = operation.lhs - operation.rhs;
+    return result;
   case ExecutionUnitKind::kAnd:
+    result.value = operation.lhs & operation.rhs;
+    return result;
   case ExecutionUnitKind::kOr:
+    result.value = operation.lhs | operation.rhs;
+    return result;
   case ExecutionUnitKind::kXor:
+    result.value = operation.lhs ^ operation.rhs;
+    return result;
   case ExecutionUnitKind::kControl:
+    result.halt = (operation.instruction.opcode == Opcode::kHalt);
+    return result;
   case ExecutionUnitKind::kAgu:
-    break;
+    result.memory = true;
+    result.address = operation.lhs + operation.rhs;
+    result.memory_write = (operation.instruction.opcode == Opcode::kSw);
+    result.store_value = operation.store_value;
+    return result;
   }
 
-  throw std::runtime_error("ExecutionPipeline::ResultFor: TODO(A2-EXEC-02)");
+//   throw std::runtime_error("ExecutionPipeline::ResultFor: TODO(A2-EXEC-02)");
+  
 }
 } // namespace pipesim
