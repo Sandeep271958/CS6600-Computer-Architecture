@@ -74,7 +74,23 @@ StageSnapshot Core::Snapshot(StageRole role) const {
 }
 void Core::Writeback() {
   BeginCycle();
-  throw std::runtime_error("Core::Writeback: TODO(A2-DESIGN-06)");
+
+  // Create an empty snapshot
+  StageSnapshot &snapshot =
+      snapshots_[static_cast<std::size_t>(StageRole::kWriteback)];
+  snapshot = StageSnapshot();
+  snapshot.action = "EMPTY";
+
+  // Retire a max of 1 instruction per cycle
+  pipesim::Retirement ret;
+  bool canRetire = machine_->PeekRetirement(&ret);
+
+  if (canRetire) {
+    machine_->ApplyRetirement(ret);
+    StageSnapshot retire_snapshot = SnapshotFor(ret.instruction);
+    retire_snapshot.action = "RETIRE";
+    snapshot = retire_snapshot;
+  }
 }
 void Core::Memory() {
   StageSnapshot &snapshot =
@@ -82,29 +98,30 @@ void Core::Memory() {
   snapshot = StageSnapshot();
   snapshot.action = "EMPTY";
 
-  ExecutionPipeline *agu =
-      pipelines_[static_cast<std::size_t>(ExecutionUnitKind::kAgu)];
-
-  std::optional<ExecutionResult> out = agu->OutputIntent();
-
-  if (!out.has_value()) {
-    return;
-  }
-
-  if (out->memory) {
-    snapshot = SnapshotFor(out->instruction);
-
-    bool accepted = machine_->TryIssueData(out->sequence, out->address,
-                                           out->memory_write, out->store_value);
-
-    if (accepted) {
-      snapshot.action = "ISSUE";
-
-      consume_output_[static_cast<std::size_t>(ExecutionUnitKind::kAgu)] = true;
+  for (int i = 0; i < 7; i++) {
+    auto intent = pipelines_[i]->OutputIntent();
+    if (!intent.has_value()) {
+      continue;
     }
 
-    else {
-      snapshot.action = "STALL";
+    if (pipelines_[i]->kind() != pipesim::ExecutionUnitKind::kAgu) {
+      machine_->CompleteNonMemory(intent->sequence, intent->value,
+                                  intent->halt);
+      consume_output_[i] = true;
+    } else {
+      snapshot = SnapshotFor(intent->instruction);
+      if (!machine_->PendingDataHasCapacity()) {
+        machine_->RecordCpuStall(pipesim::CpuStallReason::kPendingDataFull);
+        snapshot.action = "STALL";
+      } else if (!machine_->DataRequestLinkCanAccept()) {
+        machine_->RecordCpuStall(pipesim::CpuStallReason::kDcacheInput);
+        snapshot.action = "STALL";
+      } else {
+        machine_->TryIssueData(intent->sequence, intent->address,
+                               intent->memory_write, intent->store_value);
+        consume_output_[i] = true;
+        snapshot.action = "HANDOFF";
+      }
     }
   }
 }
