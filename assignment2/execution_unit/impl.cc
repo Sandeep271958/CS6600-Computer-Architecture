@@ -41,7 +41,25 @@ ExecutionResult ExecutionPipeline::Impl::ResultFor(const ExecutionOperation &ope
     result.value = operation.lhs ^ operation.rhs;
     return result;
   case ExecutionUnitKind::kControl:
-    result.halt = (operation.instruction.opcode == Opcode::kHalt);
+    switch (operation.instruction.opcode) {
+    case Opcode::kBeq:
+      result.redirect = (operation.lhs == operation.rhs);
+      result.next_pc = operation.instruction.immediate;
+      break;
+    case Opcode::kBne:
+      result.redirect = (operation.lhs != operation.rhs);
+      result.next_pc = operation.instruction.immediate;
+      break;
+    case Opcode::kJ:
+      result.redirect = true;
+      result.next_pc = operation.instruction.immediate;
+      break;
+    case Opcode::kHalt:
+      result.halt = true;
+      break;
+    default:
+      break;
+    }
     return result;
   case ExecutionUnitKind::kAgu:
     result.memory = true;
@@ -50,8 +68,5 @@ ExecutionResult ExecutionPipeline::Impl::ResultFor(const ExecutionOperation &ope
     result.store_value = operation.store_value;
     return result;
   }
-
-//   throw std::runtime_error("ExecutionPipeline::ResultFor: TODO(A2-EXEC-02)");
-  
 }
 } // namespace pipesim

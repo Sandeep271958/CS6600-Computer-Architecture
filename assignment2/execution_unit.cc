@@ -21,8 +21,7 @@ const char *ExecutionUnitKindName(ExecutionUnitKind kind) {
   return "UNKNOWN";
 }
 
-ExecutionPipeline::ExecutionPipeline(ExecutionUnitKind kind,
-                                     const ExecutionUnitConfig &config)
+ExecutionPipeline::ExecutionPipeline(ExecutionUnitKind kind, const ExecutionUnitConfig &config)
     : impl_(new Impl(kind, config)) {}
 ExecutionPipeline::~ExecutionPipeline() = default;
 
@@ -47,27 +46,20 @@ void ExecutionPipeline::BeginCycle() {
   impl_->operated = false;
 }
 ExecutionUnitKind ExecutionPipeline::kind() const { return impl_->kind; }
-const ExecutionUnitConfig &ExecutionPipeline::config() const {
-  return impl_->config;
-}
+const ExecutionUnitConfig &ExecutionPipeline::config() const { return impl_->config; }
 
 std::optional<ExecutionResult> ExecutionPipeline::OutputIntent() const {
-  if (!impl_->current.empty() && impl_->current.back().has_value()) {
-    return impl_->ResultFor(impl_->current.back().value());
-  }
-  return std::nullopt;
+  throw std::runtime_error("ExecutionPipeline::OutputIntent: TODO(A2-EXEC-02)");
 }
 
-bool ExecutionPipeline::CanAccept(std::uint64_t dispatch_boundary,
-                                  bool output_will_be_consumed) const {
+bool ExecutionPipeline::CanAccept(std::uint64_t dispatch_boundary, bool output_will_be_consumed) const {
   (void)dispatch_boundary;
   (void)output_will_be_consumed;
   throw std::runtime_error("ExecutionPipeline::CanAccept: TODO(A2-EXEC-03)");
 }
 
-void ExecutionPipeline::Operate(
-    std::uint64_t current_boundary,
-    const std::optional<ExecutionOperation> &dispatch, bool consume_output) {
+void ExecutionPipeline::Operate(std::uint64_t current_boundary, const std::optional<ExecutionOperation> &dispatch,
+                                bool consume_output) {
   if (!impl_->begun || impl_->operated)
     throw std::runtime_error("execution pipeline Operate lifecycle violation");
   (void)current_boundary;
@@ -76,15 +68,11 @@ void ExecutionPipeline::Operate(
   throw std::runtime_error("ExecutionPipeline::Operate: TODO(A2-EXEC-04)");
 }
 
-void ExecutionPipeline::Commit() {
-  throw std::runtime_error("ExecutionPipeline::Commit: TODO(A2-EXEC-05)");
-}
+void ExecutionPipeline::Commit() { throw std::runtime_error("ExecutionPipeline::Commit: TODO(A2-EXEC-05)"); }
 
 ExecutionSnapshot ExecutionPipeline::Snapshot() const {
   throw std::runtime_error("ExecutionPipeline::Snapshot: TODO(A2-EXEC-05)");
 }
 
-bool ExecutionPipeline::HasWork() const {
-  throw std::runtime_error("ExecutionPipeline::HasWork: TODO(A2-EXEC-05)");
-}
+bool ExecutionPipeline::HasWork() const { throw std::runtime_error("ExecutionPipeline::HasWork: TODO(A2-EXEC-05)"); }
 } // namespace pipesim
