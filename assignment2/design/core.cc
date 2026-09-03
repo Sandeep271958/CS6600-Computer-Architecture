@@ -135,37 +135,6 @@ void Core::Execute() {
       snapshots_[static_cast<std::size_t>(StageRole::kExecute)];
   snapshot = StageSnapshot();
   snapshot.action = "EMPTY";
-
-  std::optional<ExecutionOperation> dispatch_op = std::nullopt;
-
-  ExecutionUnitKind target_unit = ExecutionUnitKind::kAdd;
-
-  if (if_id_consumed_) {
-
-    DecodeResult decode_result =
-        main_control_->Decode(if_id_.fetched.instruction);
-
-    target_unit = decode_result.unit;
-
-    ExecutionOperation op;
-    op.sequence = if_id_.fetched.sequence;
-    op.instruction = if_id_.fetched.instruction;
-    op.dispatch_boundary = current_boundary_;
-
-    dispatch_op = op;
-    snapshot = SnapshotFor(if_id_.fetched.instruction);
-    snapshot.action = "OPERATE";
-  }
-
-  for (std::size_t i = 0; i < pipelines_.size(); ++i) {
-    bool is_target =
-        if_id_consumed_ && (static_cast<std::size_t>(target_unit) == i);
-
-    pipelines_[i]->Operate(current_boundary_,
-                           is_target ? dispatch_op : std::nullopt,
-                           consume_output_[i]);
-  }
-  pipelines_operated_ = true;
 }
 
 void Core::Decode() {
@@ -173,46 +142,62 @@ void Core::Decode() {
       snapshots_[static_cast<std::size_t>(StageRole::kDecode)];
   snapshot = StageSnapshot();
   snapshot.action = "EMPTY";
-  if (!if_id_.valid) {
-    return;
+
+  std::optional<pipesim::ExecutionOperation> dispatch_op = std::nullopt;
+  pipesim::ExecutionUnitKind target_unit = pipesim::ExecutionUnitKind::kAdd;
+
+  if (if_id_.valid) {
+    snapshot = SnapshotFor(if_id_.fetched.instruction);
+
+    DecodeResult decode_result =
+        main_control_->Decode(if_id_.fetched.instruction);
+
+    target_unit = decode_result.unit;
+
+    HazardResult hazard_result = hazard_control_->Check(
+        machine_, if_id_.fetched.sequence, if_id_.fetched.instruction,
+        decode_result.writes_register);
+
+    if (hazard_result == HazardResult::kRaw) {
+      snapshot.action = "STALL";
+      next_fetch_stopped_ = true;
+    } else {
+      ExecutionPipeline *target_pipeline =
+          pipelines_[static_cast<std::size_t>(decode_result.unit)];
+
+      if (!target_pipeline->CanAccept(current_boundary_, false)) {
+        snapshot.action = "STALL";
+        next_fetch_stopped_ = true;
+      } else {
+        bool allocated = machine_->TryAllocateCompletion(
+            if_id_.fetched.sequence, if_id_.fetched.instruction,
+            decode_result.writes_register, std::nullopt);
+
+        if (!allocated) {
+          snapshot.action = "STALL";
+          next_fetch_stopped_ = true;
+        } else {
+          snapshot.action = "DISPATCH";
+          if_id_consumed_ = true;
+
+          pipesim::ExecutionOperation op;
+          op.sequence = if_id_.fetched.sequence;
+          op.instruction = if_id_.fetched.instruction;
+          op.dispatch_boundary = current_boundary_;
+          dispatch_op = op;
+        }
+      }
+    }
   }
-  snapshot = SnapshotFor(if_id_.fetched.instruction);
 
-  DecodeResult decode_result =
-      main_control_->Decode(if_id_.fetched.instruction);
-
-  HazardResult hazard_result = hazard_control_->Check(
-      machine_, if_id_.fetched.sequence, if_id_.fetched.instruction,
-      decode_result.writes_register);
-
-  if (hazard_result == HazardResult::kRaw) {
-    snapshot.action = "STALL";
-    next_fetch_stopped_ = true;
-    return;
+  for (std::size_t i = 0; i < pipelines_.size(); ++i) {
+    bool is_target =
+        if_id_consumed_ && (static_cast<std::size_t>(target_unit) == i);
+    pipelines_[i]->Operate(current_boundary_,
+                           is_target ? dispatch_op : std::nullopt,
+                           consume_output_[i]);
   }
-
-  ExecutionPipeline *target_pipeline =
-      pipelines_[static_cast<std::size_t>(decode_result.unit)];
-
-  if (!target_pipeline->CanAccept(current_boundary_, false)) {
-    snapshot.action = "STALL";
-    next_fetch_stopped_ = true;
-    return;
-  }
-
-  snapshot.action = "DISPATCH";
-  if_id_consumed_ = true;
-
-  bool allocated = machine_->TryAllocateCompletion(
-      if_id_.fetched.sequence, if_id_.fetched.instruction,
-      decode_result.writes_register, std::nullopt);
-
-  if (!allocated) {
-    snapshot.action = "STALL";
-    next_fetch_stopped_ = true;
-    if_id_consumed_ = false;
-    return;
-  }
+  pipelines_operated_ = true;
 }
 
 void Core::Fetch() {
