@@ -98,17 +98,13 @@ void Core::Memory() {
   snapshot = StageSnapshot();
   snapshot.action = "EMPTY";
 
-  for (int i = 0; i < 7; i++) {
+  for (std::size_t i = 0; i < pipelines_.size(); ++i) {
     auto intent = pipelines_[i]->OutputIntent();
     if (!intent.has_value()) {
       continue;
     }
 
-    if (pipelines_[i]->kind() != pipesim::ExecutionUnitKind::kAgu) {
-      machine_->CompleteNonMemory(intent->sequence, intent->value,
-                                  intent->halt);
-      consume_output_[i] = true;
-    } else {
+    if (pipelines_[i]->kind() == pipesim::ExecutionUnitKind::kAgu) {
       snapshot = SnapshotFor(intent->instruction);
       if (!machine_->PendingDataHasCapacity()) {
         machine_->RecordCpuStall(pipesim::CpuStallReason::kPendingDataFull);
@@ -117,11 +113,19 @@ void Core::Memory() {
         machine_->RecordCpuStall(pipesim::CpuStallReason::kDcacheInput);
         snapshot.action = "STALL";
       } else {
-        machine_->TryIssueData(intent->sequence, intent->address,
-                               intent->memory_write, intent->store_value);
-        consume_output_[i] = true;
-        snapshot.action = "HANDOFF";
+        bool accepted = machine_->TryIssueData(intent->sequence, intent->address,
+                                               intent->memory_write, intent->store_value);
+        if (accepted) {
+          consume_output_[i] = true;
+          snapshot.action = "HANDOFF";
+        } else {
+          snapshot.action = "STALL";
+        }
       }
+    } else {
+      machine_->CompleteNonMemory(intent->sequence, intent->value,
+                                  intent->halt);
+      consume_output_[i] = true;
     }
   }
 }
