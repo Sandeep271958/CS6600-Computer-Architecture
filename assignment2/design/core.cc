@@ -243,7 +243,7 @@ void Core::Fetch() {
     if (machine_->PeekedFetched(&fetched)) {
       next_if_id_.valid = true;
       next_if_id_.fetched = fetched;
-      next_if_id_.decode = false;
+      next_if_id_.decoded = false;
       next_if_id_.control_recognized = false;
       machine_->ConsumeFetched();
       snapshot.action = "ACCEPTED";
@@ -252,7 +252,7 @@ void Core::Fetch() {
     }
   }
 
-  if (!fetched_stopped_) {
+  if (!fetch_stopped_) {
     if (!machine_->FetchQueueHasCapacity()) {
       machine_->RecordCpuStall(CpuStallReason::kFetchQueueFull);
       if (snapshot.action == "EMPTY")

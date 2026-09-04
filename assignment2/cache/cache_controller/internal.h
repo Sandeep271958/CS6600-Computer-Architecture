@@ -428,13 +428,103 @@ public:
         "CacheController::ResponseForHit: TODO(A2-CACHE-07)");
   }
 
-  // TODO(A2-CACHE-04): consider OUTPUT, the oldest ready-unsent waiter of
-  // each responding MSHR, and the oldest unsent waiter of each ACK_READY
-  // writeback; select the minimum (arrival_order, response id). Must not
-  // mutate state.
   ResponseChoice SelectResponse() const {
-    throw std::runtime_error(
-        "CacheController::SelectResponse: TODO(A2-CACHE-04)");
+    std::optional<ResponseChoice> best;
+
+    auto update_best = [&](const ResponseChoice &candidate) {
+      if (!best || ResponseLess(candidate, *best)) {
+        best = candidate;
+      }
+    };
+
+    if (current_output_.valid) {
+      ResponseChoice c;
+      c.owner = ResponseOwner::kOutput;
+      c.response = current_output_.response;
+      c.arrival_order = current_output_.arrival_order;
+      update_best(c);
+    }
+
+    for (std::size_t i = 0; i < current_mshrs_.size(); ++i) {
+      const auto &mshr = current_mshrs_[i];
+      if (mshr.valid && mshr.state == OwnerState::kResponding) {
+        std::optional<std::size_t> oldest_waiter_idx;
+        for (std::size_t j = 0; j < mshr.waiters.size(); ++j) {
+          const auto &w = mshr.waiters[j];
+          if (w.response_ready && !w.response_sent) {
+            if (!oldest_waiter_idx) {
+              oldest_waiter_idx = j;
+            } else {
+              const auto &ow = mshr.waiters[*oldest_waiter_idx];
+              if (std::tie(w.arrival_order, w.request_id) <
+                  std::tie(ow.arrival_order, ow.request_id)) {
+                oldest_waiter_idx = j;
+              }
+            }
+          }
+        }
+        if (oldest_waiter_idx) {
+          const auto &w = mshr.waiters[*oldest_waiter_idx];
+          ResponseChoice c;
+          c.owner = ResponseOwner::kMshr;
+          c.entry = i;
+          c.waiter = *oldest_waiter_idx;
+          c.response.id = w.request_id;
+          c.response.origin_id = w.origin_id;
+          c.response.sequence = w.sequence;
+          c.response.generation = w.generation;
+          c.response.address = w.address;
+          c.response.size = w.size;
+          if (w.type == RequestType::kRead) {
+            c.response.type = ResponseType::kReadData;
+            c.response.data = w.response_data;
+          } else {
+            c.response.type = ResponseType::kWriteAck;
+          }
+          c.arrival_order = w.arrival_order;
+          update_best(c);
+        }
+      }
+    }
+
+    for (std::size_t i = 0; i < current_writebacks_.size(); ++i) {
+      const auto &wb = current_writebacks_[i];
+      if (wb.valid && wb.state == OwnerState::kAckReady) {
+        std::optional<std::size_t> oldest_waiter_idx;
+        for (std::size_t j = 0; j < wb.waiters.size(); ++j) {
+          const auto &w = wb.waiters[j];
+          if (!w.response_sent) {
+            if (!oldest_waiter_idx) {
+              oldest_waiter_idx = j;
+            } else {
+              const auto &ow = wb.waiters[*oldest_waiter_idx];
+              if (std::tie(w.arrival_order, w.request_id) <
+                  std::tie(ow.arrival_order, ow.request_id)) {
+                oldest_waiter_idx = j;
+              }
+            }
+          }
+        }
+        if (oldest_waiter_idx) {
+          const auto &w = wb.waiters[*oldest_waiter_idx];
+          ResponseChoice c;
+          c.owner = ResponseOwner::kWriteback;
+          c.entry = i;
+          c.waiter = *oldest_waiter_idx;
+          c.response.id = w.request_id;
+          c.response.origin_id = w.origin_id;
+          c.response.sequence = w.sequence;
+          c.response.generation = w.generation;
+          c.response.address = w.address;
+          c.response.size = w.size;
+          c.response.type = ResponseType::kWritebackAck;
+          c.arrival_order = w.arrival_order;
+          update_best(c);
+        }
+      }
+    }
+
+    return best ? *best : ResponseChoice{};
   }
 
   // TODO(A2-CACHE-06): true iff request's range overlaps any
@@ -460,12 +550,12 @@ public:
         "CacheController::SelectLowerRequest: TODO(A2-CACHE-06)");
   }
 
-  // TODO(A2-CACHE-04): available (already implemented, call from here):
-  // SelectResponse() (above) does the candidate selection; this method
-  // just extracts its response if any.
   std::optional<CacheResponse> ResponseIntent() const {
-    throw std::runtime_error(
-        "CacheController::ResponseIntent: TODO(A2-CACHE-04)");
+    ResponseChoice choice = SelectResponse();
+    if (choice.owner != ResponseOwner::kNone) {
+      return choice.response;
+    }
+    return std::nullopt;
   }
 
   // TODO(A2-CACHE-06): available (already implemented, call from here):
