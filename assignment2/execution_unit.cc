@@ -49,7 +49,10 @@ ExecutionUnitKind ExecutionPipeline::kind() const { return impl_->kind; }
 const ExecutionUnitConfig &ExecutionPipeline::config() const { return impl_->config; }
 
 std::optional<ExecutionResult> ExecutionPipeline::OutputIntent() const {
-  throw std::runtime_error("ExecutionPipeline::OutputIntent: TODO(A2-EXEC-02)");
+  if (!impl_->current.empty() && impl_->current.back().has_value()) {
+    return impl_->ResultFor(impl_->current.back().value());
+  }
+  return std::nullopt;
 }
 
 bool ExecutionPipeline::CanAccept(std::uint64_t dispatch_boundary, bool output_will_be_consumed) const {
