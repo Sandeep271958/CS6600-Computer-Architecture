@@ -13,55 +13,147 @@
 #include <utility>
 #include <vector>
 
-
 namespace pipesim::cache {
 namespace cache_controller_internal {
 enum class OwnerState { kUnsent, kInFlight, kResponding, kAckReady };
-struct AddressFields { std::uint32_t block=0,set=0,tag=0,offset=0; };
-struct PipelineEntry { bool valid=false; CacheRequest request; std::uint64_t arrival_order=0; AddressFields address; };
-struct OutputEntry { bool valid=false; CacheResponse response; std::uint64_t arrival_order=0; };
-struct MshrEntry { bool valid=false; std::uint32_t block_address=0,set=0,tag=0,reserved_way=0; std::uint64_t arrival_order=0; OwnerState state=OwnerState::kUnsent; CacheRequest lower_request; std::vector<MshrWaiter> waiters; };
-struct WritebackEntry { bool valid=false; std::uint32_t address=0,size=0; std::vector<std::uint8_t> data; std::uint64_t arrival_order=0; OwnerState state=OwnerState::kUnsent; CacheRequest lower_request; std::vector<WritebackAckWaiter> waiters; std::uint32_t demand_bypasses=0; };
-enum class ResponseOwner { kNone,kOutput,kMshr,kWriteback };
-struct ResponseChoice { ResponseOwner owner=ResponseOwner::kNone; std::size_t entry=0,waiter=0; CacheResponse response; std::uint64_t arrival_order=0; };
-enum class RequestOwner { kNone,kMshr,kWriteback };
-struct RequestChoice { RequestOwner owner=RequestOwner::kNone; std::size_t entry=0; CacheRequest request; std::uint64_t arrival_order=0; bool demand_blocked_by_writeback=false; std::optional<std::size_t> oldest_eligible_writeback; };
-enum class LookupKind { kEmpty,kHit,kMshrMerge,kMshrAllocate,kWritebackForward,kHold };
-enum class LookupStall { kNone,kOutput,kMshrWaiterFull,kMshrFull,kReservedWay,kWritebackOrder,kWritebackWaiterFull,kWritebackFull };
-struct LookupDecision { LookupKind kind=LookupKind::kEmpty; LookupStall stall=LookupStall::kNone; int hit_way=-1,mshr=-1,victim_way=-1; };
-struct WritebackPlan { bool allowed=false; std::vector<std::size_t> merge_entries; int survivor=-1; LookupStall stall=LookupStall::kNone; };
-inline bool RangesOverlap(std::uint32_t a,std::uint32_t as,std::uint32_t b,std::uint32_t bs){const auto ae=static_cast<std::uint64_t>(a)+as,be=static_cast<std::uint64_t>(b)+bs;return a<be&&b<ae;}
-inline bool ResponseLess(const ResponseChoice&a,const ResponseChoice&b){return std::tie(a.arrival_order,a.response.id)<std::tie(b.arrival_order,b.response.id);}
-inline TransactionSource SourceForRole(CacheRole role){switch(role){case CacheRole::kL1I:return TransactionSource::kL1I;case CacheRole::kL1D:return TransactionSource::kL1D;case CacheRole::kL2I:return TransactionSource::kL2I;case CacheRole::kL2D:return TransactionSource::kL2D;}throw std::runtime_error("invalid cache role");}
-inline const char* OwnerStateName(OwnerState state){switch(state){case OwnerState::kUnsent:return "UNSENT";case OwnerState::kInFlight:return "IN_FLIGHT";case OwnerState::kResponding:return "RESPONDING";case OwnerState::kAckReady:return "ACK_READY";}return "UNKNOWN";}
+struct AddressFields {
+  std::uint32_t block = 0, set = 0, tag = 0, offset = 0;
+};
+struct PipelineEntry {
+  bool valid = false;
+  CacheRequest request;
+  std::uint64_t arrival_order = 0;
+  AddressFields address;
+};
+struct OutputEntry {
+  bool valid = false;
+  CacheResponse response;
+  std::uint64_t arrival_order = 0;
+};
+struct MshrEntry {
+  bool valid = false;
+  std::uint32_t block_address = 0, set = 0, tag = 0, reserved_way = 0;
+  std::uint64_t arrival_order = 0;
+  OwnerState state = OwnerState::kUnsent;
+  CacheRequest lower_request;
+  std::vector<MshrWaiter> waiters;
+};
+struct WritebackEntry {
+  bool valid = false;
+  std::uint32_t address = 0, size = 0;
+  std::vector<std::uint8_t> data;
+  std::uint64_t arrival_order = 0;
+  OwnerState state = OwnerState::kUnsent;
+  CacheRequest lower_request;
+  std::vector<WritebackAckWaiter> waiters;
+  std::uint32_t demand_bypasses = 0;
+};
+enum class ResponseOwner { kNone, kOutput, kMshr, kWriteback };
+struct ResponseChoice {
+  ResponseOwner owner = ResponseOwner::kNone;
+  std::size_t entry = 0, waiter = 0;
+  CacheResponse response;
+  std::uint64_t arrival_order = 0;
+};
+enum class RequestOwner { kNone, kMshr, kWriteback };
+struct RequestChoice {
+  RequestOwner owner = RequestOwner::kNone;
+  std::size_t entry = 0;
+  CacheRequest request;
+  std::uint64_t arrival_order = 0;
+  bool demand_blocked_by_writeback = false;
+  std::optional<std::size_t> oldest_eligible_writeback;
+};
+enum class LookupKind {
+  kEmpty,
+  kHit,
+  kMshrMerge,
+  kMshrAllocate,
+  kWritebackForward,
+  kHold
+};
+enum class LookupStall {
+  kNone,
+  kOutput,
+  kMshrWaiterFull,
+  kMshrFull,
+  kReservedWay,
+  kWritebackOrder,
+  kWritebackWaiterFull,
+  kWritebackFull
+};
+struct LookupDecision {
+  LookupKind kind = LookupKind::kEmpty;
+  LookupStall stall = LookupStall::kNone;
+  int hit_way = -1, mshr = -1, victim_way = -1;
+};
+struct WritebackPlan {
+  bool allowed = false;
+  std::vector<std::size_t> merge_entries;
+  int survivor = -1;
+  LookupStall stall = LookupStall::kNone;
+};
+inline bool RangesOverlap(std::uint32_t a, std::uint32_t as, std::uint32_t b,
+                          std::uint32_t bs) {
+  const auto ae = static_cast<std::uint64_t>(a) + as,
+             be = static_cast<std::uint64_t>(b) + bs;
+  return a < be && b < ae;
 }
+inline bool ResponseLess(const ResponseChoice &a, const ResponseChoice &b) {
+  return std::tie(a.arrival_order, a.response.id) <
+         std::tie(b.arrival_order, b.response.id);
+}
+inline TransactionSource SourceForRole(CacheRole role) {
+  switch (role) {
+  case CacheRole::kL1I:
+    return TransactionSource::kL1I;
+  case CacheRole::kL1D:
+    return TransactionSource::kL1D;
+  case CacheRole::kL2I:
+    return TransactionSource::kL2I;
+  case CacheRole::kL2D:
+    return TransactionSource::kL2D;
+  }
+  throw std::runtime_error("invalid cache role");
+}
+inline const char *OwnerStateName(OwnerState state) {
+  switch (state) {
+  case OwnerState::kUnsent:
+    return "UNSENT";
+  case OwnerState::kInFlight:
+    return "IN_FLIGHT";
+  case OwnerState::kResponding:
+    return "RESPONDING";
+  case OwnerState::kAckReady:
+    return "ACK_READY";
+  }
+  return "UNKNOWN";
+}
+} // namespace cache_controller_internal
 using namespace cache_controller_internal;
 
 class CacheController::Impl {
- public:
-  Impl(CacheRole role, const CacheConfig& config,
-       TransactionIdService* transaction_ids)
-      : role_(role),
-        config_(config),
-        transaction_ids_(transaction_ids),
-        current_lines_(config.sets,
-                       std::vector<CacheLine>(config.ways)),
-        next_lines_(current_lines_),
-        current_mshrs_(config.mshr_entries),
+public:
+  Impl(CacheRole role, const CacheConfig &config,
+       TransactionIdService *transaction_ids)
+      : role_(role), config_(config), transaction_ids_(transaction_ids),
+        current_lines_(config.sets, std::vector<CacheLine>(config.ways)),
+        next_lines_(current_lines_), current_mshrs_(config.mshr_entries),
         next_mshrs_(current_mshrs_),
         current_writebacks_(config.writeback_entries),
         next_writebacks_(current_writebacks_),
         replacement_(MakeReplacementPolicy(config.replacement, config.sets,
                                            config.ways)) {
     if (transaction_ids_ == nullptr) {
-      throw std::runtime_error("cache controller transaction-id service is null");
+      throw std::runtime_error(
+          "cache controller transaction-id service is null");
     }
     Reset();
   }
 
   void Reset() {
-    for (auto& set : current_lines_) {
-      for (CacheLine& line : set) {
+    for (auto &set : current_lines_) {
+      for (CacheLine &line : set) {
         line = CacheLine();
         line.data.assign(config_.line_size, 0);
       }
@@ -107,35 +199,39 @@ class CacheController::Impl {
   // line_size and sets. Return block base, set, tag, offset. See SPEC.md/
   // ABI.md for the exact formula.
   AddressFields MapAddress(std::uint32_t address) const {
-    (void)address;
-    throw std::runtime_error("CacheController::MapAddress: TODO(A2-CACHE-02)");
+    AddressFields fields;
+    fields.offset = address % config_.line_size;
+    fields.block = address - fields.offset;
+    fields.set = (address / config_.line_size) % config_.sets;
+    fields.tag = address / (config_.line_size * config_.sets);
+    return fields;
   }
 
-  void ValidateInbound(const CacheRequest& request) const {
+  void ValidateInbound(const CacheRequest &request) const {
     ValidateRequestPayload(request);
     if (!RangeFitsLine(request.address, request.size, config_.line_size)) {
       throw std::runtime_error(std::string(CacheRoleName(role_)) +
                                " request crosses a local cache line");
     }
     switch (role_) {
-      case CacheRole::kL1I:
-      case CacheRole::kL2I:
-        if (request.type != RequestType::kRead) {
-          throw std::runtime_error("instruction cache received a write request");
-        }
-        break;
-      case CacheRole::kL1D:
-        if (request.type != RequestType::kRead &&
-            request.type != RequestType::kWrite) {
-          throw std::runtime_error("L1D received an illegal request type");
-        }
-        break;
-      case CacheRole::kL2D:
-        if (request.type != RequestType::kRead &&
-            request.type != RequestType::kWriteback) {
-          throw std::runtime_error("L2D received an illegal request type");
-        }
-        break;
+    case CacheRole::kL1I:
+    case CacheRole::kL2I:
+      if (request.type != RequestType::kRead) {
+        throw std::runtime_error("instruction cache received a write request");
+      }
+      break;
+    case CacheRole::kL1D:
+      if (request.type != RequestType::kRead &&
+          request.type != RequestType::kWrite) {
+        throw std::runtime_error("L1D received an illegal request type");
+      }
+      break;
+    case CacheRole::kL2D:
+      if (request.type != RequestType::kRead &&
+          request.type != RequestType::kWriteback) {
+        throw std::runtime_error("L2D received an illegal request type");
+      }
+      break;
     }
     if ((role_ == CacheRole::kL1I || role_ == CacheRole::kL1D) &&
         request.origin_id != request.id) {
@@ -151,12 +247,13 @@ class CacheController::Impl {
     }
   }
 
-  int FindHit(const AddressFields& address) const {
+  int FindHit(const AddressFields &address) const {
     int hit = -1;
     for (std::uint32_t way = 0; way < config_.ways; ++way) {
-      const CacheLine& line = current_lines_[address.set][way];
+      const CacheLine &line = current_lines_[address.set][way];
       if (line.valid && line.tag == address.tag) {
-        if (hit >= 0) throw std::runtime_error("duplicate tags in one cache set");
+        if (hit >= 0)
+          throw std::runtime_error("duplicate tags in one cache set");
         hit = static_cast<int>(way);
       }
     }
@@ -166,9 +263,9 @@ class CacheController::Impl {
   int FindMshrByBlock(std::uint32_t block) const {
     int found = -1;
     for (std::size_t i = 0; i < current_mshrs_.size(); ++i) {
-      if (current_mshrs_[i].valid &&
-          current_mshrs_[i].block_address == block) {
-        if (found >= 0) throw std::runtime_error("duplicate MSHR block owner");
+      if (current_mshrs_[i].valid && current_mshrs_[i].block_address == block) {
+        if (found >= 0)
+          throw std::runtime_error("duplicate MSHR block owner");
         found = static_cast<int>(i);
       }
     }
@@ -178,9 +275,9 @@ class CacheController::Impl {
   int FindMshrByLowerId(std::uint64_t id) const {
     int found = -1;
     for (std::size_t i = 0; i < current_mshrs_.size(); ++i) {
-      if (current_mshrs_[i].valid &&
-          current_mshrs_[i].lower_request.id == id) {
-        if (found >= 0) throw std::runtime_error("duplicate MSHR lower id");
+      if (current_mshrs_[i].valid && current_mshrs_[i].lower_request.id == id) {
+        if (found >= 0)
+          throw std::runtime_error("duplicate MSHR lower id");
         found = static_cast<int>(i);
       }
     }
@@ -192,7 +289,8 @@ class CacheController::Impl {
     for (std::size_t i = 0; i < current_writebacks_.size(); ++i) {
       if (current_writebacks_[i].valid &&
           current_writebacks_[i].lower_request.id == id) {
-        if (found >= 0) throw std::runtime_error("duplicate writeback lower id");
+        if (found >= 0)
+          throw std::runtime_error("duplicate writeback lower id");
         found = static_cast<int>(i);
       }
     }
@@ -201,14 +299,16 @@ class CacheController::Impl {
 
   int FindFreeMshr() const {
     for (std::size_t i = 0; i < current_mshrs_.size(); ++i) {
-      if (!current_mshrs_[i].valid) return static_cast<int>(i);
+      if (!current_mshrs_[i].valid)
+        return static_cast<int>(i);
     }
     return -1;
   }
 
   int FindFreeWriteback() const {
     for (std::size_t i = 0; i < current_writebacks_.size(); ++i) {
-      if (!current_writebacks_[i].valid) return static_cast<int>(i);
+      if (!current_writebacks_[i].valid)
+        return static_cast<int>(i);
     }
     return -1;
   }
@@ -224,7 +324,8 @@ class CacheController::Impl {
   int PeekVictim(std::uint32_t set) const {
     const std::vector<bool> eligible = EligibleWays(set);
     for (std::uint32_t way = 0; way < config_.ways; ++way) {
-      if (eligible[way] && !current_lines_[set][way].valid) return way;
+      if (eligible[way] && !current_lines_[set][way].valid)
+        return way;
     }
     return replacement_->PeekVictim(set, eligible);
   }
@@ -235,7 +336,8 @@ class CacheController::Impl {
   // priority.
   int SelectVictim(std::uint32_t set) {
     (void)set;
-    throw std::runtime_error("CacheController::SelectVictim: TODO(A2-CACHE-08)");
+    throw std::runtime_error(
+        "CacheController::SelectVictim: TODO(A2-CACHE-08)");
   }
 
   // TODO(A2-CACHE-11): compute the transitive UNSENT overlap closure for a
@@ -250,25 +352,29 @@ class CacheController::Impl {
     (void)size;
     (void)new_waiters;
     (void)granted_writeback;
-    throw std::runtime_error("CacheController::PlanWriteback: TODO(A2-CACHE-11)");
+    throw std::runtime_error(
+        "CacheController::PlanWriteback: TODO(A2-CACHE-11)");
   }
 
   // TODO(A2-CACHE-05): true iff a granted upper response this cycle would
   // drain current OUTPUT (used to plan same-cycle OUTPUT reuse).
   bool OutputWillDrain(bool response_granted) const {
     (void)response_granted;
-    throw std::runtime_error("CacheController::OutputWillDrain: TODO(A2-CACHE-05)");
+    throw std::runtime_error(
+        "CacheController::OutputWillDrain: TODO(A2-CACHE-05)");
   }
 
   // TODO(A2-CACHE-07/08/10): the parallel LOOKUP decision -- hit, MSHR
   // merge/allocate, writeback-forward, or hold with the specific stall
   // reason, in the priority SPEC.md/ABI.md define. Must not mutate state.
-  // Existing helpers: FindHit, FindMshrByBlock, FindFreeMshr, PeekVictim, FindFreeWriteback, PlanWriteback.
+  // Existing helpers: FindHit, FindMshrByBlock, FindFreeMshr, PeekVictim,
+  // FindFreeWriteback, PlanWriteback.
   LookupDecision DecideLookup(bool output_space,
                               int granted_writeback = -1) const {
     (void)output_space;
     (void)granted_writeback;
-    throw std::runtime_error("CacheController::DecideLookup: TODO(A2-CACHE-07)");
+    throw std::runtime_error(
+        "CacheController::DecideLookup: TODO(A2-CACHE-07)");
   }
 
   // TODO(A2-CACHE-05): plan three-stage backpressure from current_* state
@@ -278,9 +384,10 @@ class CacheController::Impl {
   // takes the combined LOOKUP port for the cycle. accept_upper_request must
   // reflect whether INDEX is free or about to be vacated into LOOKUP this
   // cycle. Must not mutate state.
-  // Existing helpers: FindMshrByLowerId, FindWritebackByLowerId, ValidateEcho, ValidateInbound, OutputWillDrain, DecideLookup.
-  CacheStageIntent StageIntent(const CacheRequest* upper_request,
-                               const CacheResponse* lower_response,
+  // Existing helpers: FindMshrByLowerId, FindWritebackByLowerId, ValidateEcho,
+  // ValidateInbound, OutputWillDrain, DecideLookup.
+  CacheStageIntent StageIntent(const CacheRequest *upper_request,
+                               const CacheResponse *lower_response,
                                bool response_granted,
                                bool lower_request_granted) const {
     (void)upper_request;
@@ -294,14 +401,14 @@ class CacheController::Impl {
   // false, response_data empty) that records identity/order enough to
   // reconstruct an upward CacheResponse later. See ABI.md's MshrWaiter
   // invariants.
-  MshrWaiter MakeMshrWaiter(const PipelineEntry& pipeline) const {
+  MshrWaiter MakeMshrWaiter(const PipelineEntry &pipeline) const {
     (void)pipeline;
-    throw std::runtime_error("CacheController::MakeMshrWaiter: TODO(A2-CACHE-08)");
+    throw std::runtime_error(
+        "CacheController::MakeMshrWaiter: TODO(A2-CACHE-08)");
   }
 
   // TODO(A2-CACHE-10)
-  WritebackAckWaiter MakeWritebackWaiter(
-      const PipelineEntry& pipeline) const {
+  WritebackAckWaiter MakeWritebackWaiter(const PipelineEntry &pipeline) const {
     (void)pipeline;
     throw std::runtime_error(
         "CacheController::MakeWritebackWaiter: TODO(A2-CACHE-10)");
@@ -316,11 +423,12 @@ class CacheController::Impl {
 
   // TODO(A2-CACHE-07): construct the response for a committed hit
   // (kReadData with the read bytes, kWriteAck, or kWritebackAck).
-  CacheResponse ResponseForHit(const PipelineEntry& pipeline,
-                               const CacheLine& line) const {
+  CacheResponse ResponseForHit(const PipelineEntry &pipeline,
+                               const CacheLine &line) const {
     (void)pipeline;
     (void)line;
-    throw std::runtime_error("CacheController::ResponseForHit: TODO(A2-CACHE-07)");
+    throw std::runtime_error(
+        "CacheController::ResponseForHit: TODO(A2-CACHE-07)");
   }
 
   // TODO(A2-CACHE-04): consider OUTPUT, the oldest ready-unsent waiter of
@@ -328,12 +436,14 @@ class CacheController::Impl {
   // writeback; select the minimum (arrival_order, response id). Must not
   // mutate state.
   ResponseChoice SelectResponse() const {
-    throw std::runtime_error("CacheController::SelectResponse: TODO(A2-CACHE-04)");
+    throw std::runtime_error(
+        "CacheController::SelectResponse: TODO(A2-CACHE-04)");
   }
 
   // TODO(A2-CACHE-06): true iff request's range overlaps any
   // non-ACK_READY (i.e. UNSENT or IN_FLIGHT) writeback entry.
-  bool ConflictsWithLowerIncompleteWriteback(const CacheRequest& request) const {
+  bool
+  ConflictsWithLowerIncompleteWriteback(const CacheRequest &request) const {
     (void)request;
     throw std::runtime_error(
         "CacheController::ConflictsWithLowerIncompleteWriteback: "
@@ -378,11 +488,9 @@ class CacheController::Impl {
         "CacheController::ApplyResponseGrant: TODO(A2-CACHE-12)");
   }
 
-  void ValidateEcho(const CacheResponse& response,
-                    const CacheRequest& request,
+  void ValidateEcho(const CacheResponse &response, const CacheRequest &request,
                     ResponseType expected_type) const {
-    if (response.id != request.id ||
-        response.origin_id != request.origin_id ||
+    if (response.id != request.id || response.origin_id != request.origin_id ||
         response.sequence != request.sequence ||
         response.generation != request.generation ||
         response.address != request.address || response.size != request.size ||
@@ -399,7 +507,7 @@ class CacheController::Impl {
   // writeback ack -- transition ACK_READY (or free immediately if it had
   // no waiters).
   // Existing helpers: FindMshrByLowerId, FindWritebackByLowerId, ValidateEcho.
-  void ApplyLowerResponse(const CacheResponse& response) {
+  void ApplyLowerResponse(const CacheResponse &response) {
     (void)response;
     throw std::runtime_error(
         "CacheController::ApplyLowerResponse: TODO(A2-CACHE-09)");
@@ -410,13 +518,12 @@ class CacheController::Impl {
   // -- oldest entry/ID survives, bytes applied in entry-age order with the
   // newly-accepted bytes winning any overlap (this call's data is newest),
   // combined waiters bounded and sorted by (arrival_order, request id).
-  void InsertWriteback(std::uint32_t address,
-                       const std::vector<std::uint8_t>& data,
-                       std::uint64_t arrival_order,
-                       const std::optional<WritebackAckWaiter>& waiter,
-                       int granted_writeback = -1,
-                       std::optional<std::uint64_t> preallocated_id =
-                           std::nullopt) {
+  void
+  InsertWriteback(std::uint32_t address, const std::vector<std::uint8_t> &data,
+                  std::uint64_t arrival_order,
+                  const std::optional<WritebackAckWaiter> &waiter,
+                  int granted_writeback = -1,
+                  std::optional<std::uint64_t> preallocated_id = std::nullopt) {
     (void)address;
     (void)data;
     (void)arrival_order;
@@ -432,7 +539,7 @@ class CacheController::Impl {
   // pre-write line for a load, the post-write line otherwise), call
   // replacement_->OnHit, and update hits/writeback_hits exactly once.
   // Existing helpers: ResponseForHit.
-  void ApplyHit(const LookupDecision& decision) {
+  void ApplyHit(const LookupDecision &decision) {
     (void)decision;
     throw std::runtime_error("CacheController::ApplyHit: TODO(A2-CACHE-07)");
   }
@@ -452,8 +559,9 @@ class CacheController::Impl {
   // create one full-local-line lower kRead with one retained id; update
   // evictions/dirty_evictions/primary_misses exactly once each as
   // applicable; clear LOOKUP.
-  // Existing helpers: SelectVictim, PeekVictim, MakeMshrWaiter, InsertWriteback.
-  void ApplyMshrAllocation(const LookupDecision& decision,
+  // Existing helpers: SelectVictim, PeekVictim, MakeMshrWaiter,
+  // InsertWriteback.
+  void ApplyMshrAllocation(const LookupDecision &decision,
                            int granted_writeback) {
     (void)decision;
     (void)granted_writeback;
@@ -502,11 +610,11 @@ class CacheController::Impl {
   // once, at its defined event point. Throw for any grant referring to a
   // nonexistent candidate, or any owner/echo mismatch -- see ABI.md's
   // error taxonomy.
-  // Existing helpers: ResponseIntent, LowerRequestIntent, StageIntent, ValidateInbound, AllocateArrival, MapAddress.
-  void Operate(std::uint64_t current_cycle,
-               const CacheRequest* upper_request,
-               const CacheResponse* lower_response,
-               const CacheOperateGrants& grants) {
+  // Existing helpers: ResponseIntent, LowerRequestIntent, StageIntent,
+  // ValidateInbound, AllocateArrival, MapAddress.
+  void Operate(std::uint64_t current_cycle, const CacheRequest *upper_request,
+               const CacheResponse *lower_response,
+               const CacheOperateGrants &grants) {
     (void)current_cycle;
     (void)upper_request;
     (void)lower_response;
@@ -551,7 +659,7 @@ class CacheController::Impl {
       snapshot.pipeline[2].address = current_output_.response.address;
       snapshot.pipeline[2].state = "OUTPUT";
     }
-    for (const MshrEntry& entry : current_mshrs_) {
+    for (const MshrEntry &entry : current_mshrs_) {
       MshrSnapshot row;
       row.waiter_capacity = config_.mshr_waiters_per_entry;
       if (entry.valid) {
@@ -567,7 +675,7 @@ class CacheController::Impl {
       }
       snapshot.mshrs.push_back(std::move(row));
     }
-    for (const WritebackEntry& entry : current_writebacks_) {
+    for (const WritebackEntry &entry : current_writebacks_) {
       WritebackSnapshot row;
       row.waiter_capacity = config_.writeback_waiters_per_entry;
       if (entry.valid) {
@@ -589,31 +697,31 @@ class CacheController::Impl {
       snapshot.replacement.push_back({set, replacement});
       for (std::uint32_t way = 0; way < config_.ways; ++way) {
         std::uint64_t owner = kNoOriginId;
-        for (const MshrEntry& mshr : current_mshrs_) {
+        for (const MshrEntry &mshr : current_mshrs_) {
           if (mshr.valid && mshr.set == set && mshr.reserved_way == way) {
             owner = mshr.lower_request.id;
           }
         }
-        snapshot.lines.push_back(
-            {set, way, current_lines_[set][way], owner});
+        snapshot.lines.push_back({set, way, current_lines_[set][way], owner});
       }
     }
     return snapshot;
   }
 
   bool HasWork() const {
-    if (current_index_.valid || current_lookup_.valid || current_output_.valid) {
+    if (current_index_.valid || current_lookup_.valid ||
+        current_output_.valid) {
       return true;
     }
     return std::any_of(current_mshrs_.begin(), current_mshrs_.end(),
-                       [](const MshrEntry& entry) { return entry.valid; }) ||
+                       [](const MshrEntry &entry) { return entry.valid; }) ||
            std::any_of(current_writebacks_.begin(), current_writebacks_.end(),
-                       [](const WritebackEntry& entry) { return entry.valid; });
+                       [](const WritebackEntry &entry) { return entry.valid; });
   }
 
   CacheRole role_;
   CacheConfig config_;
-  TransactionIdService* transaction_ids_;
+  TransactionIdService *transaction_ids_;
   std::vector<std::vector<CacheLine>> current_lines_;
   std::vector<std::vector<CacheLine>> next_lines_;
   PipelineEntry current_index_;
