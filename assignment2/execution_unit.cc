@@ -1,4 +1,6 @@
+#include "execution_unit.h"
 #include "execution_unit/internal.h"
+#include <algorithm>
 #include <stdexcept>
 namespace pipesim {
 const char *ExecutionUnitKindName(ExecutionUnitKind kind) {
@@ -56,9 +58,17 @@ std::optional<ExecutionResult> ExecutionPipeline::OutputIntent() const {
 }
 
 bool ExecutionPipeline::CanAccept(std::uint64_t dispatch_boundary, bool output_will_be_consumed) const {
-  (void)dispatch_boundary;
-  (void)output_will_be_consumed;
-  throw std::runtime_error("ExecutionPipeline::CanAccept: TODO(A2-EXEC-03)");
+
+  // Next Legal Current indicates the boundary when the next instruction is legally allowed to enter -> IPC boundary
+  if (dispatch_boundary >= impl_->next_legal_current) {
+    bool pipeline_is_full = std::all_of(impl_->current.begin(), impl_->current.end(),
+                                        [](const auto &stage) { return stage.has_value(); });
+    if (!output_will_be_consumed && pipeline_is_full)
+      return false;
+    else
+      return true;
+  } else
+    return false;
 }
 
 void ExecutionPipeline::Operate(std::uint64_t current_boundary, const std::optional<ExecutionOperation> &dispatch,
