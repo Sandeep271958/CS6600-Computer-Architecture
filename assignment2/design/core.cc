@@ -113,8 +113,9 @@ void Core::Memory() {
         machine_->RecordCpuStall(pipesim::CpuStallReason::kDcacheInput);
         snapshot.action = "STALL";
       } else {
-        bool accepted = machine_->TryIssueData(intent->sequence, intent->address,
-                                               intent->memory_write, intent->store_value);
+        bool accepted =
+            machine_->TryIssueData(intent->sequence, intent->address,
+                                   intent->memory_write, intent->store_value);
         if (accepted) {
           consume_output_[i] = true;
           snapshot.action = "HANDOFF";
@@ -187,13 +188,17 @@ void Core::Decode() {
             auto opcode = if_id_.fetched.instruction.opcode;
 
             if (opcode == pipesim::Opcode::kBeq) {
-              std::uint32_t first = machine_->ReadRegister(if_id_.fetched.instruction.rs1);
-              std::uint32_t second = machine_->ReadRegister(if_id_.fetched.instruction.rs2);
+              std::uint32_t first =
+                  machine_->ReadRegister(if_id_.fetched.instruction.rs1);
+              std::uint32_t second =
+                  machine_->ReadRegister(if_id_.fetched.instruction.rs2);
               taken = (first == second);
               target = if_id_.fetched.instruction.immediate;
             } else if (opcode == pipesim::Opcode::kBne) {
-              std::uint32_t first = machine_->ReadRegister(if_id_.fetched.instruction.rs1);
-              std::uint32_t second = machine_->ReadRegister(if_id_.fetched.instruction.rs2);
+              std::uint32_t first =
+                  machine_->ReadRegister(if_id_.fetched.instruction.rs1);
+              std::uint32_t second =
+                  machine_->ReadRegister(if_id_.fetched.instruction.rs2);
               taken = (first != second);
               target = if_id_.fetched.instruction.immediate;
             } else if (opcode == pipesim::Opcode::kJ) {
@@ -232,8 +237,40 @@ void Core::Fetch() {
       snapshots_[static_cast<std::size_t>(StageRole::kFetch)];
   snapshot = StageSnapshot();
   snapshot.pc = pc_;
-  throw std::runtime_error("Core::Fetch: TODO(A2-DESIGN-02)");
+
+  if (!if_id_.valid || if_id_consumed_) {
+    FetchedInstruction fetched;
+    if (machine_->PeekedFetched(&fetched)) {
+      next_if_id_.valid = true;
+      next_if_id_.fetched = fetched;
+      next_if_id_.decode = false;
+      next_if_id_.control_recognized = false;
+      machine_->ConsumeFetched();
+      snapshot.action = "ACCEPTED";
+    } else {
+      next_if_id_.valid = false;
+    }
+  }
+
+  if (!fetched_stopped_) {
+    if (!machine_->FetchQueueHasCapacity()) {
+      machine_->RecordCpuStall(CpuStallReason::kFetchQueueFull);
+      if (snapshot.action == "EMPTY")
+        snapshot.action = "STALL";
+    } else if (!machine_->FetchRequestLinkCanAccept()) {
+      machine_->RecordCpuStall(CpuStallReason::kIcacheInput);
+      if (snapshot.action == "EMPTY")
+        snapshot.action = "STALL";
+    } else {
+      if (machine_->TryIssueFetch(pc_)) {
+        next_pc_ = pc_ + 4;
+        if (snapshot.action == "EMPTY")
+          snapshot.action = "FETCH";
+      }
+    }
+  }
 }
+
 void Core::BeginCycle() {
   if (cycle_begun_)
     throw std::runtime_error("CPU logic cycle initialized twice");
