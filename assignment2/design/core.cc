@@ -106,10 +106,10 @@ void Core::Fetch() {
 
   if (!if_id_.valid || if_id_consumed_) {
     FetchedInstruction fetched;
-    if (machine_->PeekedFetched(&fetched)) {
+    if (machine_->PeekFetched(&fetched)) {
       next_if_id_.valid = true;
       next_if_id_.fetched = fetched;
-      next_if_id_.decode = false;
+      next_if_id_.decoded = false;
       next_if_id_.control_recognized = false;
       machine_->ConsumeFetched();
       snapshot.action = "ACCEPTED";
@@ -118,15 +118,15 @@ void Core::Fetch() {
     }
   }
 
-  if (!fetched_stopped_) {
+  if (!fetch_stopped_) {
     if (!machine_->FetchQueueHasCapacity()) {
       machine_->RecordCpuStall(CpuStallReason::kFetchQueueFull);
       if (snapshot.action == "EMPTY")
-        snapshot.action == "STALL";
+        snapshot.action = "STALL";
     } else if (!machine_->FetchRequestLinkCanAccept()) {
       machine_->RecordCpuStall(CpuStallReason::kIcacheInput);
       if (snapshot.action == "EMPTY")
-        snapshot.action == "STALL";
+        snapshot.action = "STALL";
     } else {
       if (machine_->TryIssueFetch(pc_)) {
         next_pc_ = pc_ + 4;
