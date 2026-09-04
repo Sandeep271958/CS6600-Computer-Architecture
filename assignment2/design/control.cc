@@ -1,4 +1,5 @@
 #include "design/control.h"
+
 #include <stdexcept>
 namespace pipesim::design_internal {
 DecodeResult MainControl::Decode(const Instruction &instruction) {
