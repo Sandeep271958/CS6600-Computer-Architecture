@@ -30,7 +30,6 @@ void Core::ResetRegister(RegisterKind kind) {
   for (auto &s : snapshots_)
     s = StageSnapshot();
 }
-
 void Core::CommitRegister(RegisterKind kind) {
   if (kind != RegisterKind::kPc)
     return;
@@ -75,68 +74,166 @@ StageSnapshot Core::Snapshot(StageRole role) const {
 }
 void Core::Writeback() {
   BeginCycle();
-  throw std::runtime_error("Core::Writeback: TODO(A2-DESIGN-06)");
+
+  // Create an empty snapshot
+  StageSnapshot &snapshot =
+      snapshots_[static_cast<std::size_t>(StageRole::kWriteback)];
+  snapshot = StageSnapshot();
+  snapshot.action = "EMPTY";
+
+  // Retire a max of 1 instruction per cycle
+  pipesim::Retirement ret;
+  bool canRetire = machine_->PeekRetirement(&ret);
+
+  if (canRetire) {
+    machine_->ApplyRetirement(ret);
+    StageSnapshot retire_snapshot = SnapshotFor(ret.instruction);
+    retire_snapshot.action = "RETIRE";
+    snapshot = retire_snapshot;
+  }
 }
 void Core::Memory() {
   StageSnapshot &snapshot =
       snapshots_[static_cast<std::size_t>(StageRole::kMemory)];
   snapshot = StageSnapshot();
   snapshot.action = "EMPTY";
-  throw std::runtime_error("Core::Memory: TODO(A2-DESIGN-05)");
+
+  for (std::size_t i = 0; i < pipelines_.size(); ++i) {
+    auto intent = pipelines_[i]->OutputIntent();
+    if (!intent.has_value()) {
+      continue;
+    }
+
+    if (pipelines_[i]->kind() == pipesim::ExecutionUnitKind::kAgu) {
+      snapshot = SnapshotFor(intent->instruction);
+      if (!machine_->PendingDataHasCapacity()) {
+        machine_->RecordCpuStall(pipesim::CpuStallReason::kPendingDataFull);
+        snapshot.action = "STALL";
+      } else if (!machine_->DataRequestLinkCanAccept()) {
+        machine_->RecordCpuStall(pipesim::CpuStallReason::kDcacheInput);
+        snapshot.action = "STALL";
+      } else {
+        bool accepted = machine_->TryIssueData(intent->sequence, intent->address,
+                                               intent->memory_write, intent->store_value);
+        if (accepted) {
+          consume_output_[i] = true;
+          snapshot.action = "HANDOFF";
+        } else {
+          snapshot.action = "STALL";
+        }
+      }
+    } else {
+      machine_->CompleteNonMemory(intent->sequence, intent->value,
+                                  intent->halt);
+      consume_output_[i] = true;
+    }
+  }
 }
+
 void Core::Execute() {
   StageSnapshot &snapshot =
       snapshots_[static_cast<std::size_t>(StageRole::kExecute)];
   snapshot = StageSnapshot();
   snapshot.action = "EMPTY";
-  throw std::runtime_error("Core::Execute: TODO(A2-DESIGN-05)");
 }
+
 void Core::Decode() {
   StageSnapshot &snapshot =
       snapshots_[static_cast<std::size_t>(StageRole::kDecode)];
   snapshot = StageSnapshot();
   snapshot.action = "EMPTY";
-  throw std::runtime_error("Core::Decode: TODO(A2-DESIGN-03)");
+
+  std::optional<pipesim::ExecutionOperation> dispatch_op = std::nullopt;
+  pipesim::ExecutionUnitKind target_unit = pipesim::ExecutionUnitKind::kAdd;
+
+  if (if_id_.valid) {
+    snapshot = SnapshotFor(if_id_.fetched.instruction);
+
+    DecodeResult decode_result =
+        main_control_->Decode(if_id_.fetched.instruction);
+
+    target_unit = decode_result.unit;
+
+    HazardResult hazard_result = hazard_control_->Check(
+        machine_, if_id_.fetched.sequence, if_id_.fetched.instruction,
+        decode_result.writes_register);
+
+    if (hazard_result == HazardResult::kRaw) {
+      snapshot.action = "STALL";
+      next_fetch_stopped_ = true;
+    } else {
+      ExecutionPipeline *target_pipeline =
+          pipelines_[static_cast<std::size_t>(decode_result.unit)];
+
+      if (!target_pipeline->CanAccept(current_boundary_, false)) {
+        snapshot.action = "STALL";
+        next_fetch_stopped_ = true;
+      } else {
+        bool allocated = machine_->TryAllocateCompletion(
+            if_id_.fetched.sequence, if_id_.fetched.instruction,
+            decode_result.writes_register, std::nullopt);
+
+        if (!allocated) {
+          snapshot.action = "STALL";
+          next_fetch_stopped_ = true;
+        } else {
+          snapshot.action = "DISPATCH";
+          if_id_consumed_ = true;
+
+          if (target_unit == pipesim::ExecutionUnitKind::kControl) {
+            control_recognized_this_cycle_ = true;
+            bool taken = false;
+            std::uint32_t target = 0;
+            auto opcode = if_id_.fetched.instruction.opcode;
+
+            if (opcode == pipesim::Opcode::kBeq) {
+              std::uint32_t first = machine_->ReadRegister(if_id_.fetched.instruction.rs1);
+              std::uint32_t second = machine_->ReadRegister(if_id_.fetched.instruction.rs2);
+              taken = (first == second);
+              target = if_id_.fetched.instruction.immediate;
+            } else if (opcode == pipesim::Opcode::kBne) {
+              std::uint32_t first = machine_->ReadRegister(if_id_.fetched.instruction.rs1);
+              std::uint32_t second = machine_->ReadRegister(if_id_.fetched.instruction.rs2);
+              taken = (first != second);
+              target = if_id_.fetched.instruction.immediate;
+            } else if (opcode == pipesim::Opcode::kJ) {
+              taken = true;
+              target = if_id_.fetched.instruction.immediate;
+            }
+
+            if (taken) {
+              machine_->InvalidateFetchesAfter(if_id_.fetched.sequence);
+              next_pc_ = target;
+            }
+          }
+
+          pipesim::ExecutionOperation op;
+          op.sequence = if_id_.fetched.sequence;
+          op.instruction = if_id_.fetched.instruction;
+          op.dispatch_boundary = current_boundary_;
+          dispatch_op = op;
+        }
+      }
+    }
+  }
+
+  for (std::size_t i = 0; i < pipelines_.size(); ++i) {
+    bool is_target =
+        if_id_consumed_ && (static_cast<std::size_t>(target_unit) == i);
+    pipelines_[i]->Operate(current_boundary_,
+                           is_target ? dispatch_op : std::nullopt,
+                           consume_output_[i]);
+  }
+  pipelines_operated_ = true;
 }
+
 void Core::Fetch() {
   StageSnapshot &snapshot =
       snapshots_[static_cast<std::size_t>(StageRole::kFetch)];
   snapshot = StageSnapshot();
   snapshot.pc = pc_;
-
-  if (!if_id_.valid || if_id_consumed_) {
-    FetchedInstruction fetched;
-    if (machine_->PeekedFetched(&fetched)) {
-      next_if_id_.valid = true;
-      next_if_id_.fetched = fetched;
-      next_if_id_.decode = false;
-      next_if_id_.control_recognized = false;
-      machine_->ConsumeFetched();
-      snapshot.action = "ACCEPTED";
-    } else {
-      next_if_id_.valid = false;
-    }
-  }
-
-  if (!fetched_stopped_) {
-    if (!machine_->FetchQueueHasCapacity()) {
-      machine_->RecordCpuStall(CpuStallReason::kFetchQueueFull);
-      if (snapshot.action == "EMPTY")
-        snapshot.action == "STALL";
-    } else if (!machine_->FetchRequestLinkCanAccept()) {
-      machine_->RecordCpuStall(CpuStallReason::kIcacheInput);
-      if (snapshot.action == "EMPTY")
-        snapshot.action == "STALL";
-    } else {
-      if (machine_->TryIssueFetch(pc_)) {
-        next_pc_ = pc_ + 4;
-        if (snapshot.action == "EMPTY")
-          snapshot.action = "FETCH";
-      }
-    }
-  }
+  throw std::runtime_error("Core::Fetch: TODO(A2-DESIGN-02)");
 }
-
 void Core::BeginCycle() {
   if (cycle_begun_)
     throw std::runtime_error("CPU logic cycle initialized twice");

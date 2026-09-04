@@ -6,6 +6,7 @@ DecodeResult MainControl::Decode(const Instruction &instruction) {
   Touch();
   return {UnitFor(instruction.opcode), WritesRegister(instruction)};
 }
+
 HazardResult HazardControl::Check(Machine *machine, std::uint64_t sequence,
                                   const Instruction &instruction,
                                   bool writes_register) {
@@ -14,6 +15,10 @@ HazardResult HazardControl::Check(Machine *machine, std::uint64_t sequence,
   if (ReadsRs1(instruction.opcode) &&
       machine->HasOlderProducer(sequence, instruction.rs1))
     return HazardResult::kRaw;
-  throw std::runtime_error("HazardControl::Check: TODO(A2-DESIGN-03)");
+  if (ReadsRs2(instruction.opcode) &&
+      machine->HasOlderProducer(sequence, instruction.rs2))
+    return HazardResult::kRaw;
+  else
+    return HazardResult::kNone;
 }
 } // namespace pipesim::design_internal

@@ -30,22 +30,31 @@ ExecutionUnitKind UnitFor(Opcode opcode) {
   switch (opcode) {
   case Opcode::kAdd:
   case Opcode::kAddi:
+  case Opcode::kNop:
     return ExecutionUnitKind::kAdd;
+
   case Opcode::kSub:
+    return ExecutionUnitKind::kSub;
   case Opcode::kAnd:
+    return ExecutionUnitKind::kAnd;
+
   case Opcode::kOr:
+    return ExecutionUnitKind::kOr;
+
   case Opcode::kXor:
+    return ExecutionUnitKind::kXor;
+
   case Opcode::kBeq:
   case Opcode::kBne:
   case Opcode::kJ:
   case Opcode::kHalt:
+    return ExecutionUnitKind::kControl;
+
   case Opcode::kLw:
   case Opcode::kSw:
-    break;
-  case Opcode::kNop:
-    break;
+    return ExecutionUnitKind::kAgu;
   }
-  throw std::runtime_error("UnitFor: TODO(A2-DESIGN-03) opcode not routed");
+  throw std::runtime_error("UnitFor: unknown opcode");
 }
 [[maybe_unused]] std::uint64_t ResultBoundary(std::uint64_t dispatch,
                                               std::uint32_t latency) {
