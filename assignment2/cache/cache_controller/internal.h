@@ -327,14 +327,12 @@ public:
     return replacement_->PeekVictim(set, eligible);
   }
 
-  // TODO(A2-CACHE-08): choose/reserve a deterministic victim among
-  // currently-eligible, currently-invalid-first ways; fall back to the
-  // configured replacement policy. See SPEC.md's three-step victim
-  // priority.
   int SelectVictim(std::uint32_t set) {
-    (void)set;
-    throw std::runtime_error(
-        "CacheController::SelectVictim: TODO(A2-CACHE-08)");
+    int way = PeekVictim(set);
+    if (way >= 0) {
+      next_lines_[set][way].reserved = true;
+    }
+    return way;
   }
 
   // TODO(A2-CACHE-11): compute the transitive UNSENT overlap closure for a
@@ -362,14 +360,14 @@ public:
 
   LookupDecision DecideLookup(bool output_space,
                               int granted_writeback = -1) const {
-    (void)granted_writeback;
     LookupDecision decision;
     if (!current_lookup_.valid) {
       decision.kind = LookupKind::kEmpty;
       return decision;
     }
 
-    int hit = FindHit(current_lookup_.address);
+    const auto &pipeline = current_lookup_;
+    int hit = FindHit(pipeline.address);
     if (hit >= 0) {
       if (!output_space) {
         decision.kind = LookupKind::kHold;
@@ -381,8 +379,56 @@ public:
       return decision;
     }
 
-    throw std::runtime_error(
-        "CacheController::DecideLookup: TODO(A2-CACHE-08/10)");
+    if (pipeline.request.type == RequestType::kWriteback) {
+      throw std::runtime_error(
+          "CacheController::DecideLookup: TODO(A2-CACHE-10)");
+    }
+
+    int mshr = FindMshrByBlock(pipeline.address.block);
+    if (mshr >= 0) {
+      if (current_mshrs_[mshr].waiters.size() >=
+          config_.mshr_waiters_per_entry) {
+        decision.kind = LookupKind::kHold;
+        decision.stall = LookupStall::kMshrWaiterFull;
+        return decision;
+      }
+      decision.kind = LookupKind::kMshrMerge;
+      decision.mshr = mshr;
+      return decision;
+    }
+
+    int free_mshr = FindFreeMshr();
+    if (free_mshr < 0) {
+      decision.kind = LookupKind::kHold;
+      decision.stall = LookupStall::kMshrFull;
+      return decision;
+    }
+
+    int victim = PeekVictim(pipeline.address.set);
+    if (victim < 0) {
+      decision.kind = LookupKind::kHold;
+      decision.stall = LookupStall::kReservedWay;
+      return decision;
+    }
+
+    const CacheLine &victim_line = current_lines_[pipeline.address.set][victim];
+    if (victim_line.valid && victim_line.dirty) {
+      std::uint32_t wb_address =
+          (victim_line.tag * config_.sets + pipeline.address.set) *
+          config_.line_size;
+      WritebackPlan plan =
+          PlanWriteback(wb_address, config_.line_size, 0, granted_writeback);
+      if (!plan.allowed) {
+        decision.kind = LookupKind::kHold;
+        decision.stall = plan.stall;
+        return decision;
+      }
+    }
+
+    decision.kind = LookupKind::kMshrAllocate;
+    decision.mshr = free_mshr;
+    decision.victim_way = victim;
+    return decision;
   }
 
   CacheStageIntent StageIntent(const CacheRequest *upper_request,
@@ -441,14 +487,21 @@ public:
     return intent;
   }
 
-  // TODO(A2-CACHE-08): construct a waiter (initialize both response flags
-  // false, response_data empty) that records identity/order enough to
-  // reconstruct an upward CacheResponse later. See ABI.md's MshrWaiter
-  // invariants.
   MshrWaiter MakeMshrWaiter(const PipelineEntry &pipeline) const {
-    (void)pipeline;
-    throw std::runtime_error(
-        "CacheController::MakeMshrWaiter: TODO(A2-CACHE-08)");
+    MshrWaiter w;
+    w.request_id = pipeline.request.id;
+    w.origin_id = pipeline.request.origin_id;
+    w.sequence = pipeline.request.sequence;
+    w.arrival_order = pipeline.arrival_order;
+    w.generation = pipeline.request.generation;
+    w.type = pipeline.request.type;
+    w.address = pipeline.request.address;
+    w.size = pipeline.request.size;
+    w.data = pipeline.request.data;
+    w.response_ready = false;
+    w.response_sent = false;
+    w.response_data.clear();
+    return w;
   }
 
   // TODO(A2-CACHE-10)
@@ -766,29 +819,66 @@ public:
     next_lookup_.valid = false;
   }
 
-  // TODO(A2-CACHE-08): append a waiter to the existing MSHR; update
-  // mshr_merges exactly once; clear LOOKUP.
   void ApplyMshrMerge(int mshr_index) {
-    (void)mshr_index;
-    throw std::runtime_error(
-        "CacheController::ApplyMshrMerge: TODO(A2-CACHE-08)");
+    next_mshrs_[mshr_index].waiters.push_back(MakeMshrWaiter(current_lookup_));
+    CheckedIncrement(&next_stats_.mshr_merges, "mshr_merges");
+    next_lookup_.valid = false;
   }
 
-  // TODO(A2-CACHE-08): allocate the new primary MSHR at the planned victim
-  // way, reserving it; if the victim line is valid+dirty, insert its
-  // writeback (allocating a second id in the same batch when a new
-  // writeback owner is created, via transaction_ids_->ReserveBatch);
-  // create one full-local-line lower kRead with one retained id; update
-  // evictions/dirty_evictions/primary_misses exactly once each as
-  // applicable; clear LOOKUP.
-  // Existing helpers: SelectVictim, PeekVictim, MakeMshrWaiter,
-  // InsertWriteback.
   void ApplyMshrAllocation(const LookupDecision &decision,
                            int granted_writeback) {
-    (void)decision;
-    (void)granted_writeback;
-    throw std::runtime_error(
-        "CacheController::ApplyMshrAllocation: TODO(A2-CACHE-08)");
+    const auto &pipeline = current_lookup_;
+    int victim = SelectVictim(pipeline.address.set);
+    const CacheLine &victim_line = current_lines_[pipeline.address.set][victim];
+
+    bool victim_valid = victim_line.valid;
+    bool victim_dirty = victim_line.dirty;
+
+    int ids_needed = 1;
+    if (victim_valid && victim_dirty) {
+      ids_needed = 2;
+    }
+
+    std::vector<std::uint64_t> ids =
+        transaction_ids_->ReserveBatch(SourceForRole(role_), ids_needed);
+    std::uint64_t read_id = ids[0];
+
+    if (victim_valid && victim_dirty) {
+      std::uint32_t wb_address =
+          (victim_line.tag * config_.sets + pipeline.address.set) *
+          config_.line_size;
+      InsertWriteback(wb_address, victim_line.data, AllocateArrival(),
+                      std::nullopt, granted_writeback, ids[1]);
+      CheckedIncrement(&next_stats_.dirty_evictions, "dirty_evictions");
+    }
+
+    if (victim_valid) {
+      CheckedIncrement(&next_stats_.evictions, "evictions");
+    }
+
+    MshrEntry &mshr = next_mshrs_[decision.mshr];
+    mshr.valid = true;
+    mshr.block_address = pipeline.address.block;
+    mshr.set = pipeline.address.set;
+    mshr.tag = pipeline.address.tag;
+    mshr.reserved_way = victim;
+    mshr.arrival_order = AllocateArrival();
+    mshr.state = OwnerState::kUnsent;
+
+    mshr.lower_request.id = read_id;
+    mshr.lower_request.origin_id = kNoOriginId;
+    mshr.lower_request.sequence = kNoSequence;
+    mshr.lower_request.generation = 0;
+    mshr.lower_request.address = pipeline.address.block;
+    mshr.lower_request.size = config_.line_size;
+    mshr.lower_request.type = RequestType::kRead;
+    mshr.lower_request.data.clear();
+
+    mshr.waiters.clear();
+    mshr.waiters.push_back(MakeMshrWaiter(pipeline));
+
+    CheckedIncrement(&next_stats_.primary_misses, "primary_misses");
+    next_lookup_.valid = false;
   }
 
   // TODO(A2-CACHE-10): forward an upper writeback into InsertWriteback with
