@@ -240,19 +240,21 @@ void Core::Fetch() {
 
   if (!if_id_.valid || if_id_consumed_) {
     FetchedInstruction fetched;
-    if (machine_->PeekedFetched(&fetched)) {
-      next_if_id_.valid = true;
-      next_if_id_.fetched = fetched;
-      next_if_id_.decode = false;
-      next_if_id_.control_recognized = false;
-      machine_->ConsumeFetched();
-      snapshot.action = "ACCEPTED";
-    } else {
-      next_if_id_.valid = false;
+    if (machine_->PeekFetched(&fetched)) {
+      if (!fetch_stopped_) {
+        next_if_id_.valid = true;
+        next_if_id_.fetched = fetched;
+        next_if_id_.decode = main_control_->Decode(fetched.instruction);
+        next_if_id_.control_recognized = false;
+        machine_->ConsumeFetched();
+        snapshot.action = "ACCEPTED";
+      } else {
+        next_if_id_.valid = false;
+      }
     }
   }
 
-  if (!fetched_stopped_) {
+  if (!fetch_stopped_) {
     if (!machine_->FetchQueueHasCapacity()) {
       machine_->RecordCpuStall(CpuStallReason::kFetchQueueFull);
       if (snapshot.action == "EMPTY")
