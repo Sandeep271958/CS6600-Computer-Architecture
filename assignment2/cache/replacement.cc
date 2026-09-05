@@ -20,7 +20,7 @@ namespace {
   }
 }
 
-// TODO(A2-REPL-01): Tree-PLRU. Implement Reset/BeginCycle/OnHit/OnInsert/
+// Tree-PLRU. Implement Reset/BeginCycle/OnHit/OnInsert/
 // PeekVictim/SelectVictim/DebugState per SPEC.md/ABI.md.
 //
 // Worked example (current/next commit discipline only -- the same shape
@@ -82,7 +82,10 @@ public:
 
   int SelectVictim(std::uint32_t set,
                    const std::vector<bool> &eligible) override {
-
+    if (!begun_) {
+      throw std::runtime_error("TreePlru::SelectVictim: cycle not begun");
+    }
+    event_planned_ = true;
     int target_way = PeekVictim(set, eligible);
     OnHit(set, target_way);
     return target_way;
@@ -119,7 +122,7 @@ public:
       }
 
       if (go_right) {
-        node = 2 * node;
+        node = 2 * node + 2;
         base_way = base_way + half_span;
       } else {
         node = 2 * node + 1;
@@ -162,7 +165,7 @@ private:
   bool event_planned_ = false;
 };
 
-// TODO(A2-REPL-02): SRRIP. Implement Reset/BeginCycle/OnHit/OnInsert/
+// SRRIP. Implement Reset/BeginCycle/OnHit/OnInsert/
 // PeekVictim/SelectVictim/DebugState per SPEC.md/ABI.md (2-bit RRPV,
 // init 3, hit 0, insertion 2, saturating aging, lowest-way tie-break).
 class Srrip final : public ReplacementPolicy {
@@ -277,8 +280,8 @@ private:
 
 } // namespace
 
-// TODO(A2-REPL-03): return the requested concrete policy for the supplied
-// sets/ways, or fail on an impossible enumerator. Worked example below.
+// return the requested concrete policy for the supplied
+//  sets/ways, or fail on an impossible enumerator. Worked example below.
 std::unique_ptr<ReplacementPolicy> MakeReplacementPolicy(ReplacementKind kind,
                                                          std::uint32_t sets,
                                                          std::uint32_t ways) {
