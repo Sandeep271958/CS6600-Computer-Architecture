@@ -1,4 +1,6 @@
 #include "execution_unit.h"
+#include "execution_config.h"
+#include "execution_unit/helpers.h"
 #include "execution_unit/internal.h"
 #include <algorithm>
 #include <stdexcept>
@@ -113,11 +115,61 @@ void ExecutionPipeline::Operate(std::uint64_t current_boundary, const std::optio
   impl_->operated = true;
 }
 
-void ExecutionPipeline::Commit() { throw std::runtime_error("ExecutionPipeline::Commit: TODO(A2-EXEC-05)"); }
+void ExecutionPipeline::Commit() {
+  if (!impl_->operated) {
+    throw std::runtime_error("Called without Operate; Execution Pipeline Commit lifecycle violation");
+  }
 
-ExecutionSnapshot ExecutionPipeline::Snapshot() const {
-  throw std::runtime_error("ExecutionPipeline::Snapshot: TODO(A2-EXEC-05)");
+  // Commit/Promote the next state to current
+  impl_->current = impl_->next;
+  impl_->next_legal_current = impl_->next_legal_next;
+
+  // Reset Operated Flag for the Next Cycle
+  impl_->operated = false;
+  impl_->begun = true;
 }
 
-bool ExecutionPipeline::HasWork() const { throw std::runtime_error("ExecutionPipeline::HasWork: TODO(A2-EXEC-05)"); }
+ExecutionSnapshot ExecutionPipeline::Snapshot() const {
+  ExecutionSnapshot snapshot;
+  snapshot.kind = impl_->kind;
+  snapshot.next_legal_dispatch_boundary = impl_->next_legal_current;
+
+  uint32_t latency = impl_->current.size();
+
+  for (uint32_t i = 0; i < latency; ++i) {
+    ExecutionStageSnapshot stage_snapshot;
+    stage_snapshot.stage = i;
+
+    if (impl_->current[i].has_value()) {
+      const auto &op = impl_->current[i].value();
+      stage_snapshot.valid = true;
+      stage_snapshot.sequence = op.sequence;
+      stage_snapshot.pc = op.instruction.pc;
+      stage_snapshot.opcode = OpcodeName(op.instruction.opcode);
+      stage_snapshot.unit = ExecutionUnitKindName(impl_->kind);
+
+      stage_snapshot.dispatch_boundary = op.dispatch_boundary;
+      // Expected Exit Time
+      stage_snapshot.nominal_result_boundary = execution_internal::CheckedResultBoundary(op.dispatch_boundary,
+                                                                                         impl_->config.latency);
+      stage_snapshot.lhs = op.lhs;
+      stage_snapshot.rhs = op.rhs;
+      stage_snapshot.store_value = op.store_value;
+      stage_snapshot.destination = op.instruction.rd;
+
+      stage_snapshot.writes_register = execution_internal::WritesRegister(op.instruction.opcode, op.instruction.rd);
+    }
+
+    snapshot.stages.push_back(stage_snapshot);
+  }
+
+  return snapshot;
+}
+
+bool ExecutionPipeline::HasWork() const {
+  if (!std::any_of(impl_->current.begin(), impl_->current.end(), [](const auto &stage) { return stage.has_value(); }))
+    return false;
+  else
+    return true;
+}
 } // namespace pipesim
