@@ -77,8 +77,40 @@ void ExecutionPipeline::Operate(std::uint64_t current_boundary, const std::optio
     throw std::runtime_error("execution pipeline Operate lifecycle violation");
   (void)current_boundary;
   (void)dispatch;
-  (void)consume_output;
-  throw std::runtime_error("ExecutionPipeline::Operate: TODO(A2-EXEC-04)");
+
+  uint32_t depth = impl_->current.size();
+  std::vector<bool> will_be_free(depth, false);
+
+  // Find the bubbles back to front
+  will_be_free[depth - 1] = !impl_->current[depth - 1].has_value() || consume_output;
+  for (int i = depth - 2; i >= 0; i--) {
+    will_be_free[i] = !impl_->current[i].has_value() || will_be_free[i + 1];
+  }
+
+  // Move instructions through the pipeline
+  for (uint32_t i = 1; i < depth; i++) {
+    if (will_be_free[i]) {
+      impl_->next[i] = impl_->current[i - 1];
+    } else {
+      impl_->next[i] = impl_->current[i];
+    }
+  }
+
+  // First stage gets the new instruction
+  if (will_be_free[0]) {
+    impl_->next[0] = dispatch;
+  } else {
+    impl_->next[0] = impl_->current[0];
+  }
+
+  // Update Initiation Interval tracking
+  if (dispatch.has_value()) {
+    impl_->next_legal_next = current_boundary + impl_->config.initiation_interval;
+  } else {
+    impl_->next_legal_next = impl_->next_legal_current;
+  }
+
+  impl_->operated = true;
 }
 
 void ExecutionPipeline::Commit() { throw std::runtime_error("ExecutionPipeline::Commit: TODO(A2-EXEC-05)"); }
