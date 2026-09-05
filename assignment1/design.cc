@@ -436,6 +436,7 @@ class Core {
 
     if(IsControl(instruction.opcode)){
       front_action_ = FrontAction::kStop;
+      machine_->AddControlStall();
     }
   }
 
@@ -448,7 +449,6 @@ class Core {
       next_pc_ = redirect_pc_;
       next_if_id_ = Latch();
       snapshot.action = "REDIRECT";
-      machine_->AddControlStall();
       return;
     }
 
@@ -463,7 +463,6 @@ class Core {
       next_pc_ = pc_;
       next_if_id_ = Latch();
       snapshot.action = "BUBBLE";
-      machine_->AddControlStall();
       return;
     }
 
