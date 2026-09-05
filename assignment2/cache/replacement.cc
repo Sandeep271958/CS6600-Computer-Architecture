@@ -13,8 +13,7 @@ namespace pipesim {
 namespace cache {
 namespace {
 
-[[maybe_unused]] void CheckCoordinates(std::uint32_t set, std::uint32_t way,
-                                       std::uint32_t sets, std::uint32_t ways) {
+[[maybe_unused]] void CheckCoordinates(std::uint32_t set, std::uint32_t way, std::uint32_t sets, std::uint32_t ways) {
   if (set >= sets || way >= ways) {
     throw std::runtime_error("replacement-policy coordinate out of range");
   }
@@ -29,12 +28,13 @@ namespace {
 // with the actual tree-bit read/update logic, which is not given.
 class TreePlru final : public ReplacementPolicy {
 public:
-  TreePlru(std::uint32_t sets, std::uint32_t ways)
-      : sets_(sets), ways_(ways), current_(sets, std::vector<bool>(ways - 1)),
-        planned_(sets, std::vector<bool>(ways - 1)) {
-    if (!IsPowerOfTwo(ways_)) {
-      throw std::runtime_error("Tree-PLRU requires power-of-two ways");
+  TreePlru(std::uint32_t sets, std::uint32_t ways) : sets_(sets), ways_(ways), current_(), planned_() {
+    if (!IsPowerOfTwo(ways_) || ways_ < 2) {
+      throw std::runtime_error("Tree-PLRU requires power-of-two ways >= 2");
     }
+
+    current_.assign(sets_, std::vector<bool>(ways_ - 1));
+    planned_.assign(sets_, std::vector<bool>(ways_ - 1));
   }
 
   void Reset() override {
@@ -76,12 +76,9 @@ public:
     }
   }
 
-  void OnInsert(std::uint32_t set, std::uint32_t way) override {
-    OnHit(set, way);
-  }
+  void OnInsert(std::uint32_t set, std::uint32_t way) override { OnHit(set, way); }
 
-  int SelectVictim(std::uint32_t set,
-                   const std::vector<bool> &eligible) override {
+  int SelectVictim(std::uint32_t set, const std::vector<bool> &eligible) override {
     if (!begun_) {
       throw std::runtime_error("TreePlru::SelectVictim: cycle not begun");
     }
@@ -91,11 +88,18 @@ public:
     return target_way;
   }
 
-  int PeekVictim(std::uint32_t set,
-                 const std::vector<bool> &eligible) const override {
+  int PeekVictim(std::uint32_t set, const std::vector<bool> &eligible) const override {
     std::uint32_t node = 0;
     std::uint32_t base_way = 0;
     std::uint32_t span = ways_;
+
+    if (eligible.size() != ways_) {
+      throw std::runtime_error("TreePlru::PeekVictim: eligible size mismatch");
+    }
+
+    if (std::none_of(eligible.begin(), eligible.end(), [](bool e) { return e; })) {
+      throw std::runtime_error("TreePlru::PeekVictim: no eligible ways found");
+    }
 
     while (node < ways_ - 1) {
       std::uint32_t half_span = span / 2;
@@ -171,8 +175,7 @@ private:
 class Srrip final : public ReplacementPolicy {
 public:
   Srrip(std::uint32_t sets, std::uint32_t ways)
-      : sets_(sets), ways_(ways),
-        current_(sets, std::vector<std::uint8_t>(ways, 3)),
+      : sets_(sets), ways_(ways), current_(sets, std::vector<std::uint8_t>(ways, 3)),
         planned_(sets, std::vector<std::uint8_t>(ways, 3)) {}
 
   void Reset() override {
@@ -212,8 +215,7 @@ public:
     planned_[set][way] = 2;
   }
 
-  int SelectVictim(std::uint32_t set,
-                   const std::vector<bool> &eligible) override {
+  int SelectVictim(std::uint32_t set, const std::vector<bool> &eligible) override {
     if (!begun_) {
       throw std::runtime_error("SRRIP::SelectVictim: cycle not begun");
     }
@@ -230,8 +232,7 @@ public:
     return victim_way;
   }
 
-  int PeekVictim(std::uint32_t set,
-                 const std::vector<bool> &eligible) const override {
+  int PeekVictim(std::uint32_t set, const std::vector<bool> &eligible) const override {
 
     int victim_way = -1;
     int max_rrvp = -1;
@@ -282,9 +283,7 @@ private:
 
 // return the requested concrete policy for the supplied
 //  sets/ways, or fail on an impossible enumerator. Worked example below.
-std::unique_ptr<ReplacementPolicy> MakeReplacementPolicy(ReplacementKind kind,
-                                                         std::uint32_t sets,
-                                                         std::uint32_t ways) {
+std::unique_ptr<ReplacementPolicy> MakeReplacementPolicy(ReplacementKind kind, std::uint32_t sets, std::uint32_t ways) {
   switch (kind) {
   case ReplacementKind::kTreePlru:
     return std::unique_ptr<ReplacementPolicy>(new TreePlru(sets, ways));
