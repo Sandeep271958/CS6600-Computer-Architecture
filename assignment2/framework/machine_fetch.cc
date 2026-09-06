@@ -34,6 +34,7 @@ bool Machine::TryIssueFetch(std::uint32_t pc) {
     throw std::runtime_error(
         "CPU fetch address is unaligned or out of image");
   }
+  if (impl_->instruction_pcs.count(pc) == 0) return false;
   Impl::FetchSlot* free_slot = nullptr;
   for (std::size_t i = 0; i < impl_->fetch_current.size(); ++i) {
     if (impl_->fetch_current[i].state == Impl::FetchState::kFree) {

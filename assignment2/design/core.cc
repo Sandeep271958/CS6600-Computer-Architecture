@@ -135,28 +135,36 @@ void Core::Memory() {
   snapshot = StageSnapshot();
   snapshot.action = "EMPTY";
 
-  // Move from EX_MEM to MEM_WB
-  next_mem_wb_ = ExecutionLatch();
-  if (!ex_mem_.valid) return;
+  for (std::size_t index = 0; index < pipelines_.size(); ++index) {
+    const std::optional<ExecutionResult> output =
+        pipelines_[index]->OutputIntent();
+    if (!output) continue;
 
-  next_mem_wb_.valid = true;
-  next_mem_wb_.sequence = ex_mem_.sequence;
-  next_mem_wb_.instruction = ex_mem_.instruction;
-  next_mem_wb_.result = ex_mem_.result;
-  next_mem_wb_.writes_register = ex_mem_.writes_register;
-  next_mem_wb_.memory_read = ex_mem_.memory_read;
-  next_mem_wb_.memory_write = ex_mem_.memory_write;
-  next_mem_wb_.store_value = ex_mem_.store_value;
-  next_mem_wb_.halt = ex_mem_.halt;
-
-  // If CONTROL pipeline resolved, re-enable fetch
-  auto opcode = ex_mem_.instruction.opcode;
-  if (opcode == Opcode::kBeq || opcode == Opcode::kBne || opcode == Opcode::kJ || opcode == Opcode::kHalt) {
-    next_fetch_stopped_ = false;
+    snapshot = SnapshotFor(output->instruction);
+    if (static_cast<ExecutionUnitKind>(index) == ExecutionUnitKind::kAgu) {
+      if (!machine_->PendingDataHasCapacity()) {
+        machine_->RecordCpuStall(CpuStallReason::kPendingDataFull);
+        snapshot.action = "STALL";
+      } else if (!machine_->DataRequestLinkCanAccept()) {
+        machine_->RecordCpuStall(CpuStallReason::kDcacheInput);
+        snapshot.action = "STALL";
+      } else if (machine_->TryIssueData(output->sequence, output->address,
+                                        output->memory_write,
+                                        output->store_value)) {
+        consume_output_[index] = true;
+        snapshot.action = "HANDOFF";
+      } else {
+        snapshot.action = "STALL";
+      }
+    } else {
+      machine_->CompleteNonMemory(output->sequence, output->value,
+                                  output->halt);
+      consume_output_[index] = true;
+      snapshot.action = "COMPLETE";
+      if (static_cast<ExecutionUnitKind>(index) == ExecutionUnitKind::kControl)
+        next_fetch_stopped_ = false;
+    }
   }
-
-  snapshot = SnapshotFor(ex_mem_.instruction);
-  snapshot.action = "RUN";
 }
 
 void Core::Execute() {
@@ -166,34 +174,24 @@ void Core::Execute() {
   snapshot.action = "EMPTY";
 
   next_ex_mem_ = ExecutionLatch();
-  for (std::size_t index = 0; index < pipelines_.size(); ++index) {
-    const std::optional<ExecutionResult> output =
-        pipelines_[index]->OutputIntent();
-    if (!output) continue;
+  if (!id_ex_.valid) return;
 
-    consume_output_[index] = true;
-    snapshot = SnapshotFor(output->instruction);
-    snapshot.action = "RUN";
-    if (static_cast<ExecutionUnitKind>(index) == ExecutionUnitKind::kAgu) {
-      if (!machine_->TryIssueData(output->sequence, output->address,
-                                  output->memory_write, output->store_value)) {
-        consume_output_[index] = false;
-        machine_->RecordCpuStall(CpuStallReason::kPendingDataFull);
-        snapshot.action = "STALL";
-        break;
-      }
-    } else {
-      machine_->CompleteNonMemory(output->sequence, output->value,
-                                  output->halt);
-      if (output->instruction.opcode == Opcode::kBeq ||
-          output->instruction.opcode == Opcode::kBne ||
-          output->instruction.opcode == Opcode::kJ ||
-          output->instruction.opcode == Opcode::kHalt) {
-        next_fetch_stopped_ = false;
-      }
-    }
-    break;
-  }
+  DecodeResult dec = main_control_->Decode(id_ex_.instruction);
+  next_ex_mem_.valid = true;
+  next_ex_mem_.sequence = id_ex_.sequence;
+  next_ex_mem_.instruction = id_ex_.instruction;
+  next_ex_mem_.lhs = id_ex_.lhs;
+  next_ex_mem_.rhs = id_ex_.rhs;
+  next_ex_mem_.store_value = id_ex_.store_value;
+  next_ex_mem_.writes_register = dec.writes_register;
+
+  const Opcode opcode = id_ex_.instruction.opcode;
+  next_ex_mem_.memory_read = opcode == Opcode::kLw;
+  next_ex_mem_.memory_write = opcode == Opcode::kSw;
+  next_ex_mem_.halt = opcode == Opcode::kHalt;
+
+  snapshot = SnapshotFor(id_ex_.instruction);
+  snapshot.action = "RUN";
 }
 
 void Core::Decode() {
@@ -348,19 +346,16 @@ void Core::Fetch() {
   snapshot = StageSnapshot();
   snapshot.pc = pc_;
 
-  if (!control_recognized_this_cycle_ && (!if_id_.valid || if_id_consumed_)) {
+  if (!fetch_stopped_ && !control_recognized_this_cycle_ &&
+      (!if_id_.valid || if_id_consumed_)) {
     FetchedInstruction fetched;
     if (machine_->PeekFetched(&fetched)) {
-      if (!fetch_stopped_) {
-        next_if_id_.valid = true;
-        next_if_id_.fetched = fetched;
-        next_if_id_.decode = main_control_->Decode(fetched.instruction);
-        next_if_id_.control_recognized = false;
-        machine_->ConsumeFetched();
-        snapshot.action = "ACCEPTED";
-      } else {
-        next_if_id_.valid = false;
-      }
+      next_if_id_.valid = true;
+      next_if_id_.fetched = fetched;
+      next_if_id_.decode = main_control_->Decode(fetched.instruction);
+      next_if_id_.control_recognized = false;
+      machine_->ConsumeFetched();
+      snapshot.action = "ACCEPTED";
     }
   }
 
