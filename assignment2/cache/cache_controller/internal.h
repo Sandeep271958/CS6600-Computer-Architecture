@@ -910,14 +910,42 @@ public:
         "CacheController::ApplyWritebackForward: TODO(A2-CACHE-10)");
   }
 
-  // TODO(A2-CACHE-13): increment exactly the one stats counter
+  // increment exactly the one stats counter
   // corresponding to `stall` (kNone/kOutput count nothing). See SPEC.md's
   // stall-precedence chain for which counter fires when several reasons
   // could apply.
   void CountLookupStall(LookupStall stall) {
-    (void)stall;
-    throw std::runtime_error(
-        "CacheController::CountLookupStall: TODO(A2-CACHE-13)");
+
+    switch (stall) {
+    case LookupStall ::kNone:
+      break;
+
+    case LookupStall::kOutput:
+      CheckedIncrement(&next_stats_.output_queue_stalls, "output_queue_stalls");
+      break;
+    case LookupStall::kMshrWaiterFull:
+      CheckedIncrement(&next_stats_.mshr_waiter_full_stalls,
+                       "mshr_waiter_full_stalls");
+      break;
+    case LookupStall::kMshrFull:
+      CheckedIncrement(&next_stats_.mshr_full_stalls, "mshr_full_stalls");
+      break;
+    case LookupStall::kReservedWay:
+      CheckedIncrement(&next_stats_.reserved_way_stalls, "reserved_way_stalls");
+      break;
+    case LookupStall::kWritebackOrder:
+      CheckedIncrement(&next_stats_.writeback_order_stalls,
+                       "writeback_order_stalls");
+      break;
+    case LookupStall::kWritebackWaiterFull:
+      CheckedIncrement(&next_stats_.writeback_waiter_full_stalls,
+                       "writeback_waiter_full_stalls");
+      break;
+    case LookupStall::kWritebackFull:
+      CheckedIncrement(&next_stats_.writeback_full_stalls,
+                       "writeback_full_stalls");
+      break;
+    }
   }
 
   // transition the granted MSHR/writeback UNSENT ->
