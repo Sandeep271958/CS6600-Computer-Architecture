@@ -17,31 +17,68 @@ Core::Core(Machine *machine,
       throw std::runtime_error("CPU core execution-unit registration mismatch");
 }
 void Core::ResetRegister(RegisterKind kind) {
-  if (kind != RegisterKind::kPc)
-    return;
-  pc_ = machine_->EntryPoint();
-  next_pc_ = pc_;
-  fetch_stopped_ = false;
-  next_fetch_stopped_ = false;
-  if_id_ = FrontendLatch();
-  next_if_id_ = FrontendLatch();
-  current_boundary_ = 0;
-  cycle_begun_ = false;
-  for (auto &s : snapshots_)
-    s = StageSnapshot();
+  switch (kind) {
+  case RegisterKind::kPc:
+    pc_ = machine_->EntryPoint();
+    next_pc_ = pc_;
+    fetch_stopped_ = false;
+    next_fetch_stopped_ = false;
+    if_id_ = FrontendLatch();
+    next_if_id_ = FrontendLatch();
+    current_boundary_ = 0;
+    cycle_begun_ = false;
+    for (auto &s : snapshots_)
+      s = StageSnapshot();
+    break;
+  case RegisterKind::kIfId:
+    if_id_ = FrontendLatch();
+    next_if_id_ = FrontendLatch();
+    break;
+  case RegisterKind::kIdEx:
+    id_ex_ = ExecutionLatch();
+    next_id_ex_ = ExecutionLatch();
+    break;
+  case RegisterKind::kExMem:
+    ex_mem_ = ExecutionLatch();
+    next_ex_mem_ = ExecutionLatch();
+    break;
+  case RegisterKind::kMemWb:
+    mem_wb_ = ExecutionLatch();
+    next_mem_wb_ = ExecutionLatch();
+    break;
+  }
 }
 void Core::CommitRegister(RegisterKind kind) {
-  if (kind != RegisterKind::kPc)
-    return;
-  if (!cycle_begun_ || !pipelines_operated_)
+  // Only check for operate completion on PC commit (first register)
+  if (kind == RegisterKind::kPc && (!cycle_begun_ || !pipelines_operated_))
     throw std::runtime_error("CPU core commit without a complete operate pass");
-  pc_ = next_pc_;
-  fetch_stopped_ = next_fetch_stopped_;
-  if_id_ = next_if_id_;
-  if (current_boundary_ == std::numeric_limits<std::uint64_t>::max())
-    throw std::runtime_error("CPU boundary counter overflow");
-  ++current_boundary_;
-  cycle_begun_ = false;
+
+  switch (kind) {
+  case RegisterKind::kPc:
+    pc_ = next_pc_;
+    fetch_stopped_ = next_fetch_stopped_;
+    if_id_ = next_if_id_;
+    break;
+  case RegisterKind::kIfId:
+    if_id_ = next_if_id_;
+    break;
+  case RegisterKind::kIdEx:
+    id_ex_ = next_id_ex_;
+    break;
+  case RegisterKind::kExMem:
+    ex_mem_ = next_ex_mem_;
+    break;
+  case RegisterKind::kMemWb:
+    mem_wb_ = next_mem_wb_;
+    break;
+  }
+
+  if (kind == RegisterKind::kPc) {
+    if (current_boundary_ == std::numeric_limits<std::uint64_t>::max())
+      throw std::runtime_error("CPU boundary counter overflow");
+    ++current_boundary_;
+    cycle_begun_ = false;
+  }
 }
 std::string Core::RegisterSnapshot(RegisterKind kind) const {
   std::ostringstream output;
@@ -98,53 +135,28 @@ void Core::Memory() {
   snapshot = StageSnapshot();
   snapshot.action = "EMPTY";
 
-  for (std::size_t i = 0; i < pipelines_.size(); ++i) {
-    auto intent = pipelines_[i]->OutputIntent();
-    if (!intent.has_value()) {
-      continue;
-    }
+  // Move from EX_MEM to MEM_WB
+  next_mem_wb_ = ExecutionLatch();
+  if (!ex_mem_.valid) return;
 
-    if (pipelines_[i]->kind() == pipesim::ExecutionUnitKind::kAgu) {
-      snapshot = SnapshotFor(intent->instruction);
-      if (!machine_->PendingDataHasCapacity()) {
-        machine_->RecordCpuStall(pipesim::CpuStallReason::kPendingDataFull);
-        snapshot.action = "STALL";
-      } else if (!machine_->DataRequestLinkCanAccept()) {
-        machine_->RecordCpuStall(pipesim::CpuStallReason::kDcacheInput);
-        snapshot.action = "STALL";
-      } else {
-        bool accepted =
-            machine_->TryIssueData(intent->sequence, intent->address,
-                                   intent->memory_write, intent->store_value);
-        if (accepted) {
-          consume_output_[i] = true;
-          snapshot.action = "HANDOFF";
-        } else {
-          snapshot.action = "STALL";
-        }
-      }
-    } else {
-      // Non-memory, non-AGU: complete the result
-      machine_->CompleteNonMemory(intent->sequence, intent->value,
-                                  intent->halt);
-      consume_output_[i] = true;
-      snapshot = SnapshotFor(intent->instruction);
-      snapshot.action = "COMPLETE";
-      // If the CONTROL pipeline just resolved, re-enable fetch
-      // (spec §6.1: fetch restarts only after resolution)
-      if (pipelines_[i]->kind() == pipesim::ExecutionUnitKind::kControl) {
-        if (intent->redirect) {
-          // Taken branch/jump: redirect was already applied at dispatch;
-          // just clear the stopped flag so IF can restart.
-          next_fetch_stopped_ = false;
-        } else {
-          // Not-taken or HALT: also clear the fetch stop
-          // (HALT's retirement will stop the machine via IsHalted)
-          next_fetch_stopped_ = false;
-        }
-      }
-    }
+  next_mem_wb_.valid = true;
+  next_mem_wb_.sequence = ex_mem_.sequence;
+  next_mem_wb_.instruction = ex_mem_.instruction;
+  next_mem_wb_.result = ex_mem_.result;
+  next_mem_wb_.writes_register = ex_mem_.writes_register;
+  next_mem_wb_.memory_read = ex_mem_.memory_read;
+  next_mem_wb_.memory_write = ex_mem_.memory_write;
+  next_mem_wb_.store_value = ex_mem_.store_value;
+  next_mem_wb_.halt = ex_mem_.halt;
+
+  // If CONTROL pipeline resolved, re-enable fetch
+  auto opcode = ex_mem_.instruction.opcode;
+  if (opcode == Opcode::kBeq || opcode == Opcode::kBne || opcode == Opcode::kJ || opcode == Opcode::kHalt) {
+    next_fetch_stopped_ = false;
   }
+
+  snapshot = SnapshotFor(ex_mem_.instruction);
+  snapshot.action = "RUN";
 }
 
 void Core::Execute() {
@@ -152,6 +164,36 @@ void Core::Execute() {
       snapshots_[static_cast<std::size_t>(StageRole::kExecute)];
   snapshot = StageSnapshot();
   snapshot.action = "EMPTY";
+
+  next_ex_mem_ = ExecutionLatch();
+  for (std::size_t index = 0; index < pipelines_.size(); ++index) {
+    const std::optional<ExecutionResult> output =
+        pipelines_[index]->OutputIntent();
+    if (!output) continue;
+
+    consume_output_[index] = true;
+    snapshot = SnapshotFor(output->instruction);
+    snapshot.action = "RUN";
+    if (static_cast<ExecutionUnitKind>(index) == ExecutionUnitKind::kAgu) {
+      if (!machine_->TryIssueData(output->sequence, output->address,
+                                  output->memory_write, output->store_value)) {
+        consume_output_[index] = false;
+        machine_->RecordCpuStall(CpuStallReason::kPendingDataFull);
+        snapshot.action = "STALL";
+        break;
+      }
+    } else {
+      machine_->CompleteNonMemory(output->sequence, output->value,
+                                  output->halt);
+      if (output->instruction.opcode == Opcode::kBeq ||
+          output->instruction.opcode == Opcode::kBne ||
+          output->instruction.opcode == Opcode::kJ ||
+          output->instruction.opcode == Opcode::kHalt) {
+        next_fetch_stopped_ = false;
+      }
+    }
+    break;
+  }
 }
 
 void Core::Decode() {
@@ -198,7 +240,9 @@ void Core::Decode() {
       ExecutionPipeline *target_pipeline =
           pipelines_[static_cast<std::size_t>(decode_result.unit)];
 
-      if (!target_pipeline->CanAccept(current_boundary_, false)) {
+            if (!target_pipeline->CanAccept(
+              current_boundary_,
+              consume_output_[static_cast<std::size_t>(decode_result.unit)])) {
         // Unit availability
         snapshot.action = "STALL";
         next_fetch_stopped_ = true;
@@ -207,8 +251,10 @@ void Core::Decode() {
         std::optional<std::uint64_t> result_boundary = std::nullopt;
         bool slot_ok = true;
         if (decode_result.unit != pipesim::ExecutionUnitKind::kAgu) {
+          // Spec: nominal_result_boundary = dispatch_boundary + latency + 1
+          // Framework requires result_boundary >= current_boundary + 2
           std::uint64_t rb = current_boundary_ +
-                             static_cast<std::uint64_t>(target_pipeline->config().latency) + 1;
+                             static_cast<std::uint64_t>(target_pipeline->config().latency) + 2;
           result_boundary = rb;
           if (!machine_->NormalCompletionSlotAvailable(rb)) {
             slot_ok = false;
@@ -229,6 +275,8 @@ void Core::Decode() {
           } else {
             snapshot.action = "DISPATCH";
             if_id_consumed_ = true;
+            next_if_id_.valid = false;
+            next_fetch_stopped_ = false;
 
             if (target_unit == pipesim::ExecutionUnitKind::kControl) {
               control_recognized_this_cycle_ = true;
@@ -258,9 +306,9 @@ void Core::Decode() {
                 target = if_id_.fetched.instruction.immediate;
               }
 
-              if (taken) {
+              if (taken || opcode == Opcode::kHalt) {
                 machine_->InvalidateFetchesAfter(if_id_.fetched.sequence);
-                next_pc_ = target;
+                if (taken) next_pc_ = target;
               }
             }
 
@@ -300,7 +348,7 @@ void Core::Fetch() {
   snapshot = StageSnapshot();
   snapshot.pc = pc_;
 
-  if (!if_id_.valid || if_id_consumed_) {
+  if (!control_recognized_this_cycle_ && (!if_id_.valid || if_id_consumed_)) {
     FetchedInstruction fetched;
     if (machine_->PeekFetched(&fetched)) {
       if (!fetch_stopped_) {
@@ -316,7 +364,7 @@ void Core::Fetch() {
     }
   }
 
-  if (!fetch_stopped_) {
+  if (!fetch_stopped_ && !control_recognized_this_cycle_) {
     if (!machine_->FetchQueueHasCapacity()) {
       machine_->RecordCpuStall(CpuStallReason::kFetchQueueFull);
       if (snapshot.action == "EMPTY")

@@ -889,6 +889,10 @@ public:
     }
 
     if (plan.survivor >= 0) {
+      // Count the merge
+      if (!plan.merge_entries.empty()) {
+        CheckedIncrement(&next_stats_.writeback_merges, "writeback_merges");
+      }
       // Find bounding box
       std::uint32_t c_addr = address;
       std::uint64_t max_end = address + data.size();
@@ -1050,9 +1054,9 @@ public:
     mshr.state = OwnerState::kUnsent;
 
     mshr.lower_request.id = read_id;
-    mshr.lower_request.origin_id = kNoOriginId;
-    mshr.lower_request.sequence = kNoSequence;
-    mshr.lower_request.generation = 0;
+    mshr.lower_request.origin_id = pipeline.request.origin_id;
+    mshr.lower_request.sequence = pipeline.request.sequence;
+    mshr.lower_request.generation = pipeline.request.generation;
     mshr.lower_request.address = pipeline.address.block;
     mshr.lower_request.size = config_.line_size;
     mshr.lower_request.type = RequestType::kRead;

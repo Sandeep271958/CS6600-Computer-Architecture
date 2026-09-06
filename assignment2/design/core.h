@@ -16,6 +16,23 @@ struct FrontendLatch {
   bool control_recognized = false;
   DecodeResult decode;
 };
+
+struct ExecutionLatch {
+  bool valid = false;
+  std::uint64_t sequence = 0;
+  Instruction instruction;
+  std::uint32_t lhs = 0;
+  std::uint32_t rhs = 0;
+  std::uint32_t store_value = 0;
+  std::uint32_t result = 0;
+  bool writes_register = false;
+  bool memory_read = false;
+  bool memory_write = false;
+  bool halt = false;
+  bool redirect = false;
+  std::uint32_t next_pc = 0;
+};
+
 enum class RegisterKind { kPc, kIfId, kIdEx, kExMem, kMemWb };
 class Core {
 public:
@@ -42,6 +59,9 @@ private:
   std::uint32_t pc_ = 0, next_pc_ = 0;
   bool fetch_stopped_ = false, next_fetch_stopped_ = false;
   FrontendLatch if_id_, next_if_id_;
+  ExecutionLatch id_ex_, next_id_ex_;
+  ExecutionLatch ex_mem_, next_ex_mem_;
+  ExecutionLatch mem_wb_, next_mem_wb_;
   std::uint64_t current_boundary_ = 0;
   std::array<bool, 7> consume_output_ = {};
   bool if_id_consumed_ = false;
