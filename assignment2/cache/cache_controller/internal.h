@@ -772,14 +772,6 @@ public:
     }
   }
 
-  // TODO(A2-CACHE-10): for an owned fill -- install the complete line
-  // into its already-reserved way, replay every waiter once in arrival
-  // order at byte granularity (capturing each load's bytes at its own
-  // replay point, applying each store's bytes), mark dirty if any waiter
-  // wrote, call replacement_->OnInsert exactly once. For an owned
-  // writeback ack -- transition ACK_READY (or free immediately if it had
-  // no waiters).
-  // Existing helpers: FindMshrByLowerId, FindWritebackByLowerId, ValidateEcho.
   void ApplyLowerResponse(const CacheResponse &response) {
     int mshr_idx = FindMshrByLowerId(response.id);
     if (mshr_idx >= 0) {
