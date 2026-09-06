@@ -11,12 +11,14 @@ $CXX $CXXFLAGS -I. tests/unit_tests.cc execution_unit.cc execution_unit/impl.cc 
 
 test_tmp=$(mktemp -d)
 trap 'rm -rf "$test_tmp" tests/unit_tests' EXIT HUP INT TERM
+sed 's/\r$//' tests/expected_example_state.txt \
+  > "$test_tmp/expected_example_state.txt"
 
 printf 'n 1000\np\nq\n' | ./pipesim example.pisa default_config.json \
   > "$test_tmp/example.out"
 sed -n '/BEGIN STATE/,/END STATE/p' "$test_tmp/example.out" \
   > "$test_tmp/example.state"
-cmp tests/expected_example_state.txt "$test_tmp/example.state"
+cmp "$test_tmp/expected_example_state.txt" "$test_tmp/example.state"
 grep -Fx 'CYCLES 71' "$test_tmp/example.out" >/dev/null
 
 printf 'n 2000\np\ns\nq\n' | ./pipesim tests/eviction.pisa default_config.json \
@@ -32,7 +34,7 @@ printf 'n 1000\np\nq\n' | ./pipesim example.pisa tests/unequal_config.json \
   > "$test_tmp/unequal.out"
 sed -n '/BEGIN STATE/,/END STATE/p' "$test_tmp/unequal.out" \
   > "$test_tmp/unequal.state"
-cmp tests/expected_example_state.txt "$test_tmp/unequal.state"
+cmp "$test_tmp/expected_example_state.txt" "$test_tmp/unequal.state"
 
 printf 'n 1000\np\ns\nq\n' | \
   ./pipesim tests/execution_hazards.pisa tests/execution_config.json \
