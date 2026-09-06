@@ -1,4 +1,8 @@
+#include "execution_unit.h"
+#include "execution_config.h"
+#include "execution_unit/helpers.h"
 #include "execution_unit/internal.h"
+#include <algorithm>
 #include <stdexcept>
 namespace pipesim {
 const char *ExecutionUnitKindName(ExecutionUnitKind kind) {
@@ -56,9 +60,17 @@ std::optional<ExecutionResult> ExecutionPipeline::OutputIntent() const {
 }
 
 bool ExecutionPipeline::CanAccept(std::uint64_t dispatch_boundary, bool output_will_be_consumed) const {
-  (void)dispatch_boundary;
-  (void)output_will_be_consumed;
-  throw std::runtime_error("ExecutionPipeline::CanAccept: TODO(A2-EXEC-03)");
+
+  // Next Legal Current indicates the boundary when the next instruction is legally allowed to enter -> IPC boundary
+  if (dispatch_boundary >= impl_->next_legal_current) {
+    bool pipeline_is_full = std::all_of(impl_->current.begin(), impl_->current.end(),
+                                        [](const auto &stage) { return stage.has_value(); });
+    if (!output_will_be_consumed && pipeline_is_full)
+      return false;
+    else
+      return true;
+  } else
+    return false;
 }
 
 void ExecutionPipeline::Operate(std::uint64_t current_boundary, const std::optional<ExecutionOperation> &dispatch,
@@ -67,15 +79,97 @@ void ExecutionPipeline::Operate(std::uint64_t current_boundary, const std::optio
     throw std::runtime_error("execution pipeline Operate lifecycle violation");
   (void)current_boundary;
   (void)dispatch;
-  (void)consume_output;
-  throw std::runtime_error("ExecutionPipeline::Operate: TODO(A2-EXEC-04)");
+
+  uint32_t depth = impl_->current.size();
+  std::vector<bool> will_be_free(depth, false);
+
+  // Find the bubbles back to front
+  will_be_free[depth - 1] = !impl_->current[depth - 1].has_value() || consume_output;
+  for (int i = depth - 2; i >= 0; i--) {
+    will_be_free[i] = !impl_->current[i].has_value() || will_be_free[i + 1];
+  }
+
+  // Move instructions through the pipeline
+  for (uint32_t i = 1; i < depth; i++) {
+    if (will_be_free[i]) {
+      impl_->next[i] = impl_->current[i - 1];
+    } else {
+      impl_->next[i] = impl_->current[i];
+    }
+  }
+
+  // First stage gets the new instruction
+  if (will_be_free[0]) {
+    impl_->next[0] = dispatch;
+  } else {
+    impl_->next[0] = impl_->current[0];
+  }
+
+  // Update Initiation Interval tracking
+  if (dispatch.has_value()) {
+    impl_->next_legal_next = current_boundary + impl_->config.initiation_interval;
+  } else {
+    impl_->next_legal_next = impl_->next_legal_current;
+  }
+
+  impl_->operated = true;
 }
 
-void ExecutionPipeline::Commit() { throw std::runtime_error("ExecutionPipeline::Commit: TODO(A2-EXEC-05)"); }
+void ExecutionPipeline::Commit() {
+  if (!impl_->operated) {
+    throw std::runtime_error("Called without Operate; Execution Pipeline Commit lifecycle violation");
+  }
+
+  // Commit/Promote the next state to current
+  impl_->current = impl_->next;
+  impl_->next_legal_current = impl_->next_legal_next;
+
+  // Reset Operated Flag for the Next Cycle
+  impl_->operated = false;
+  impl_->begun = true;
+}
 
 ExecutionSnapshot ExecutionPipeline::Snapshot() const {
-  throw std::runtime_error("ExecutionPipeline::Snapshot: TODO(A2-EXEC-05)");
+  ExecutionSnapshot snapshot;
+  snapshot.kind = impl_->kind;
+  snapshot.next_legal_dispatch_boundary = impl_->next_legal_current;
+
+  uint32_t latency = impl_->current.size();
+
+  for (uint32_t i = 0; i < latency; ++i) {
+    ExecutionStageSnapshot stage_snapshot;
+    stage_snapshot.stage = i;
+
+    if (impl_->current[i].has_value()) {
+      const auto &op = impl_->current[i].value();
+      stage_snapshot.valid = true;
+      stage_snapshot.sequence = op.sequence;
+      stage_snapshot.pc = op.instruction.pc;
+      stage_snapshot.opcode = OpcodeName(op.instruction.opcode);
+      stage_snapshot.unit = ExecutionUnitKindName(impl_->kind);
+
+      stage_snapshot.dispatch_boundary = op.dispatch_boundary;
+      // Expected Exit Time
+      stage_snapshot.nominal_result_boundary = execution_internal::CheckedResultBoundary(op.dispatch_boundary,
+                                                                                         impl_->config.latency);
+      stage_snapshot.lhs = op.lhs;
+      stage_snapshot.rhs = op.rhs;
+      stage_snapshot.store_value = op.store_value;
+      stage_snapshot.destination = op.instruction.rd;
+
+      stage_snapshot.writes_register = execution_internal::WritesRegister(op.instruction.opcode, op.instruction.rd);
+    }
+
+    snapshot.stages.push_back(stage_snapshot);
+  }
+
+  return snapshot;
 }
 
-bool ExecutionPipeline::HasWork() const { throw std::runtime_error("ExecutionPipeline::HasWork: TODO(A2-EXEC-05)"); }
+bool ExecutionPipeline::HasWork() const {
+  if (!std::any_of(impl_->current.begin(), impl_->current.end(), [](const auto &stage) { return stage.has_value(); }))
+    return false;
+  else
+    return true;
+}
 } // namespace pipesim
