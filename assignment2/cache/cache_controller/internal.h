@@ -64,14 +64,7 @@ struct RequestChoice {
   bool demand_blocked_by_writeback = false;
   std::optional<std::size_t> oldest_eligible_writeback;
 };
-enum class LookupKind {
-  kEmpty,
-  kHit,
-  kMshrMerge,
-  kMshrAllocate,
-  kWritebackForward,
-  kHold
-};
+enum class LookupKind { kEmpty, kHit, kMshrMerge, kMshrAllocate, kWritebackForward, kHold };
 enum class LookupStall {
   kNone,
   kOutput,
@@ -93,15 +86,12 @@ struct WritebackPlan {
   int survivor = -1;
   LookupStall stall = LookupStall::kNone;
 };
-inline bool RangesOverlap(std::uint32_t a, std::uint32_t as, std::uint32_t b,
-                          std::uint32_t bs) {
-  const auto ae = static_cast<std::uint64_t>(a) + as,
-             be = static_cast<std::uint64_t>(b) + bs;
+inline bool RangesOverlap(std::uint32_t a, std::uint32_t as, std::uint32_t b, std::uint32_t bs) {
+  const auto ae = static_cast<std::uint64_t>(a) + as, be = static_cast<std::uint64_t>(b) + bs;
   return a < be && b < ae;
 }
 inline bool ResponseLess(const ResponseChoice &a, const ResponseChoice &b) {
-  return std::tie(a.arrival_order, a.response.id) <
-         std::tie(b.arrival_order, b.response.id);
+  return std::tie(a.arrival_order, a.response.id) < std::tie(b.arrival_order, b.response.id);
 }
 inline TransactionSource SourceForRole(CacheRole role) {
   switch (role) {
@@ -134,19 +124,14 @@ using namespace cache_controller_internal;
 
 class CacheController::Impl {
 public:
-  Impl(CacheRole role, const CacheConfig &config,
-       TransactionIdService *transaction_ids)
+  Impl(CacheRole role, const CacheConfig &config, TransactionIdService *transaction_ids)
       : role_(role), config_(config), transaction_ids_(transaction_ids),
-        current_lines_(config.sets, std::vector<CacheLine>(config.ways)),
-        next_lines_(current_lines_), current_mshrs_(config.mshr_entries),
-        next_mshrs_(current_mshrs_),
-        current_writebacks_(config.writeback_entries),
+        current_lines_(config.sets, std::vector<CacheLine>(config.ways)), next_lines_(current_lines_),
+        current_mshrs_(config.mshr_entries), next_mshrs_(current_mshrs_), current_writebacks_(config.writeback_entries),
         next_writebacks_(current_writebacks_),
-        replacement_(MakeReplacementPolicy(config.replacement, config.sets,
-                                           config.ways)) {
+        replacement_(MakeReplacementPolicy(config.replacement, config.sets, config.ways)) {
     if (transaction_ids_ == nullptr) {
-      throw std::runtime_error(
-          "cache controller transaction-id service is null");
+      throw std::runtime_error("cache controller transaction-id service is null");
     }
     Reset();
   }
@@ -207,8 +192,7 @@ public:
   void ValidateInbound(const CacheRequest &request) const {
     ValidateRequestPayload(request);
     if (!RangeFitsLine(request.address, request.size, config_.line_size)) {
-      throw std::runtime_error(std::string(CacheRoleName(role_)) +
-                               " request crosses a local cache line");
+      throw std::runtime_error(std::string(CacheRoleName(role_)) + " request crosses a local cache line");
     }
     switch (role_) {
     case CacheRole::kL1I:
@@ -218,28 +202,24 @@ public:
       }
       break;
     case CacheRole::kL1D:
-      if (request.type != RequestType::kRead &&
-          request.type != RequestType::kWrite) {
+      if (request.type != RequestType::kRead && request.type != RequestType::kWrite) {
         throw std::runtime_error("L1D received an illegal request type");
       }
       break;
     case CacheRole::kL2D:
-      if (request.type != RequestType::kRead &&
-          request.type != RequestType::kWriteback) {
+      if (request.type != RequestType::kRead && request.type != RequestType::kWriteback) {
         throw std::runtime_error("L2D received an illegal request type");
       }
       break;
     }
-    if ((role_ == CacheRole::kL1I || role_ == CacheRole::kL1D) &&
-        request.origin_id != request.id) {
+    if ((role_ == CacheRole::kL1I || role_ == CacheRole::kL1D) && request.origin_id != request.id) {
       throw std::runtime_error("L1 CPU request origin must equal link id");
     }
-    if ((role_ == CacheRole::kL1I || role_ == CacheRole::kL1D) &&
-        (request.size != 4 || request.address % 4 != 0)) {
+    if ((role_ == CacheRole::kL1I || role_ == CacheRole::kL1D) && (request.size != 4 || request.address % 4 != 0)) {
       throw std::runtime_error("CPU cache request must be one aligned word");
     }
-    if ((role_ == CacheRole::kL1D || role_ == CacheRole::kL2D) &&
-        request.type != RequestType::kWriteback && request.generation != 0) {
+    if ((role_ == CacheRole::kL1D || role_ == CacheRole::kL2D) && request.type != RequestType::kWriteback &&
+        request.generation != 0) {
       throw std::runtime_error("data demand carries a fetch generation");
     }
   }
@@ -284,8 +264,7 @@ public:
   int FindWritebackByLowerId(std::uint64_t id) const {
     int found = -1;
     for (std::size_t i = 0; i < current_writebacks_.size(); ++i) {
-      if (current_writebacks_[i].valid &&
-          current_writebacks_[i].lower_request.id == id) {
+      if (current_writebacks_[i].valid && current_writebacks_[i].lower_request.id == id) {
         if (found >= 0)
           throw std::runtime_error("duplicate writeback lower id");
         found = static_cast<int>(i);
@@ -340,15 +319,13 @@ public:
   // (kWritebackOrder) on any IN_FLIGHT or same-cycle-granted overlap;
   // enforce the bounded combined waiter count; choose the oldest survivor
   // by (arrival_order, id).
-  WritebackPlan PlanWriteback(std::uint32_t address, std::uint32_t size,
-                              std::size_t new_waiters,
+  WritebackPlan PlanWriteback(std::uint32_t address, std::uint32_t size, std::size_t new_waiters,
                               int granted_writeback = -1) const {
     (void)address;
     (void)size;
     (void)new_waiters;
     (void)granted_writeback;
-    throw std::runtime_error(
-        "CacheController::PlanWriteback: TODO(A2-CACHE-11)");
+    throw std::runtime_error("CacheController::PlanWriteback: TODO(A2-CACHE-11)");
   }
 
   bool OutputWillDrain(bool response_granted) const {
@@ -358,8 +335,7 @@ public:
     return SelectResponse().owner == ResponseOwner::kOutput;
   }
 
-  LookupDecision DecideLookup(bool output_space,
-                              int granted_writeback = -1) const {
+  LookupDecision DecideLookup(bool output_space, int granted_writeback = -1) const {
     LookupDecision decision;
     if (!current_lookup_.valid) {
       decision.kind = LookupKind::kEmpty;
@@ -380,14 +356,12 @@ public:
     }
 
     if (pipeline.request.type == RequestType::kWriteback) {
-      throw std::runtime_error(
-          "CacheController::DecideLookup: TODO(A2-CACHE-10)");
+      throw std::runtime_error("CacheController::DecideLookup: TODO(A2-CACHE-10)");
     }
 
     int mshr = FindMshrByBlock(pipeline.address.block);
     if (mshr >= 0) {
-      if (current_mshrs_[mshr].waiters.size() >=
-          config_.mshr_waiters_per_entry) {
+      if (current_mshrs_[mshr].waiters.size() >= config_.mshr_waiters_per_entry) {
         decision.kind = LookupKind::kHold;
         decision.stall = LookupStall::kMshrWaiterFull;
         return decision;
@@ -413,11 +387,8 @@ public:
 
     const CacheLine &victim_line = current_lines_[pipeline.address.set][victim];
     if (victim_line.valid && victim_line.dirty) {
-      std::uint32_t wb_address =
-          (victim_line.tag * config_.sets + pipeline.address.set) *
-          config_.line_size;
-      WritebackPlan plan =
-          PlanWriteback(wb_address, config_.line_size, 0, granted_writeback);
+      std::uint32_t wb_address = (victim_line.tag * config_.sets + pipeline.address.set) * config_.line_size;
+      WritebackPlan plan = PlanWriteback(wb_address, config_.line_size, 0, granted_writeback);
       if (!plan.allowed) {
         decision.kind = LookupKind::kHold;
         decision.stall = plan.stall;
@@ -431,10 +402,8 @@ public:
     return decision;
   }
 
-  CacheStageIntent StageIntent(const CacheRequest *upper_request,
-                               const CacheResponse *lower_response,
-                               bool response_granted,
-                               bool lower_request_granted) const {
+  CacheStageIntent StageIntent(const CacheRequest *upper_request, const CacheResponse *lower_response,
+                               bool response_granted, bool lower_request_granted) const {
     (void)upper_request;
     (void)lower_request_granted;
     CacheStageIntent intent;
@@ -444,11 +413,9 @@ public:
       int mshr_idx = FindMshrByLowerId(lower_response->id);
       if (mshr_idx >= 0) {
         const MshrEntry &mshr = current_mshrs_[mshr_idx];
-        if (mshr.state == OwnerState::kInFlight &&
-            lower_response->type == ResponseType::kReadData) {
+        if (mshr.state == OwnerState::kInFlight && lower_response->type == ResponseType::kReadData) {
           try {
-            ValidateEcho(*lower_response, mshr.lower_request,
-                         ResponseType::kReadData);
+            ValidateEcho(*lower_response, mshr.lower_request, ResponseType::kReadData);
             intent.accept_lower_response = true;
           } catch (...) {
           }
@@ -459,11 +426,9 @@ public:
         int wb_idx = FindWritebackByLowerId(lower_response->id);
         if (wb_idx >= 0) {
           const WritebackEntry &wb = current_writebacks_[wb_idx];
-          if (wb.state == OwnerState::kInFlight &&
-              lower_response->type == ResponseType::kWritebackAck) {
+          if (wb.state == OwnerState::kInFlight && lower_response->type == ResponseType::kWritebackAck) {
             try {
-              ValidateEcho(*lower_response, wb.lower_request,
-                           ResponseType::kWritebackAck);
+              ValidateEcho(*lower_response, wb.lower_request, ResponseType::kWritebackAck);
               intent.accept_lower_response = true;
             } catch (...) {
             }
@@ -478,8 +443,7 @@ public:
     const bool lookup_can_advance = current_lookup_.valid && output_has_space;
     const bool lookup_is_free = !current_lookup_.valid;
 
-    const bool index_can_advance =
-        current_index_.valid && (lookup_is_free || lookup_can_advance);
+    const bool index_can_advance = current_index_.valid && (lookup_is_free || lookup_can_advance);
     const bool index_is_free = !current_index_.valid;
 
     intent.accept_upper_request = index_is_free || index_can_advance;
@@ -507,8 +471,7 @@ public:
   // TODO(A2-CACHE-10)
   WritebackAckWaiter MakeWritebackWaiter(const PipelineEntry &pipeline) const {
     (void)pipeline;
-    throw std::runtime_error(
-        "CacheController::MakeWritebackWaiter: TODO(A2-CACHE-10)");
+    throw std::runtime_error("CacheController::MakeWritebackWaiter: TODO(A2-CACHE-10)");
   }
 
   std::uint64_t AllocateArrival() {
@@ -518,8 +481,7 @@ public:
     return next_arrival_++;
   }
 
-  CacheResponse ResponseForHit(const PipelineEntry &pipeline,
-                               const CacheLine &line) const {
+  CacheResponse ResponseForHit(const PipelineEntry &pipeline, const CacheLine &line) const {
     CacheResponse response;
     response.id = pipeline.request.id;
     response.origin_id = pipeline.request.origin_id;
@@ -530,9 +492,7 @@ public:
 
     if (pipeline.request.type == RequestType::kRead) {
       response.type = ResponseType::kReadData;
-      response.data =
-          ReadBytes(line.data, pipeline.address.block, pipeline.request.address,
-                    pipeline.request.size);
+      response.data = ReadBytes(line.data, pipeline.address.block, pipeline.request.address, pipeline.request.size);
     } else if (pipeline.request.type == RequestType::kWrite) {
       response.type = ResponseType::kWriteAck;
     } else if (pipeline.request.type == RequestType::kWriteback) {
@@ -569,8 +529,7 @@ public:
               oldest_waiter_idx = j;
             } else {
               const auto &ow = mshr.waiters[*oldest_waiter_idx];
-              if (std::tie(w.arrival_order, w.request_id) <
-                  std::tie(ow.arrival_order, ow.request_id)) {
+              if (std::tie(w.arrival_order, w.request_id) < std::tie(ow.arrival_order, ow.request_id)) {
                 oldest_waiter_idx = j;
               }
             }
@@ -611,8 +570,7 @@ public:
               oldest_waiter_idx = j;
             } else {
               const auto &ow = wb.waiters[*oldest_waiter_idx];
-              if (std::tie(w.arrival_order, w.request_id) <
-                  std::tie(ow.arrival_order, ow.request_id)) {
+              if (std::tie(w.arrival_order, w.request_id) < std::tie(ow.arrival_order, ow.request_id)) {
                 oldest_waiter_idx = j;
               }
             }
@@ -640,8 +598,7 @@ public:
     return best ? *best : ResponseChoice{};
   }
 
-  bool
-  ConflictsWithLowerIncompleteWriteback(const CacheRequest &request) const {
+  bool ConflictsWithLowerIncompleteWriteback(const CacheRequest &request) const {
     for (const auto &wb : current_writebacks_) {
       if (wb.valid && wb.state != OwnerState::kAckReady) {
         if (RangesOverlap(request.address, request.size, wb.address, wb.size)) {
@@ -666,8 +623,7 @@ public:
         best_demand_idx = i;
       } else {
         const auto &best = current_mshrs_[*best_demand_idx];
-        if (std::tie(mshr.arrival_order, mshr.lower_request.id) <
-            std::tie(best.arrival_order, best.lower_request.id)) {
+        if (std::tie(mshr.arrival_order, mshr.lower_request.id) < std::tie(best.arrival_order, best.lower_request.id)) {
           best_demand_idx = i;
         }
       }
@@ -683,8 +639,7 @@ public:
         best_wb_idx = i;
       } else {
         const auto &best = current_writebacks_[*best_wb_idx];
-        if (std::tie(wb.arrival_order, wb.lower_request.id) <
-            std::tie(best.arrival_order, best.lower_request.id)) {
+        if (std::tie(wb.arrival_order, wb.lower_request.id) < std::tie(best.arrival_order, best.lower_request.id)) {
           best_wb_idx = i;
         }
       }
@@ -740,23 +695,17 @@ public:
   // free an MSHR (unpinning its way) or writeback entry once every one of
   // its waiters has been sent.
   // Existing helpers: SelectResponse, ResponseIntent.
-  void ApplyResponseGrant() {
-    throw std::runtime_error(
-        "CacheController::ApplyResponseGrant: TODO(A2-CACHE-12)");
-  }
+  void ApplyResponseGrant() { throw std::runtime_error("CacheController::ApplyResponseGrant: TODO(A2-CACHE-12)"); }
 
-  void ValidateEcho(const CacheResponse &response, const CacheRequest &request,
-                    ResponseType expected_type) const {
-    if (response.id != request.id || response.origin_id != request.origin_id ||
-        response.sequence != request.sequence ||
-        response.generation != request.generation ||
-        response.address != request.address || response.size != request.size ||
-        response.type != expected_type) {
+  void ValidateEcho(const CacheResponse &response, const CacheRequest &request, ResponseType expected_type) const {
+    if (response.id != request.id || response.origin_id != request.origin_id || response.sequence != request.sequence ||
+        response.generation != request.generation || response.address != request.address ||
+        response.size != request.size || response.type != expected_type) {
       throw std::runtime_error("lower response metadata does not echo request");
     }
   }
 
-  // TODO(A2-CACHE-09/10): for an owned fill -- install the complete line
+  // TODO(A2-CACHE-10): for an owned fill -- install the complete line
   // into its already-reserved way, replay every waiter once in arrival
   // order at byte granularity (capturing each load's bytes at its own
   // replay point, applying each store's bytes), mark dirty if any waiter
@@ -765,9 +714,67 @@ public:
   // no waiters).
   // Existing helpers: FindMshrByLowerId, FindWritebackByLowerId, ValidateEcho.
   void ApplyLowerResponse(const CacheResponse &response) {
-    (void)response;
-    throw std::runtime_error(
-        "CacheController::ApplyLowerResponse: TODO(A2-CACHE-09)");
+    int mshr_idx = FindMshrByLowerId(response.id);
+    if (mshr_idx >= 0) {
+      auto &mshr = next_mshrs_[mshr_idx];
+      ValidateEcho(response, mshr.lower_request, ResponseType::kReadData);
+
+      // Install the cache line
+      auto &line = next_lines_[mshr.set][mshr.reserved_way];
+      line.valid = true;
+      line.reserved = false;
+      line.dirty = false;
+      line.tag = mshr.tag;
+      line.data = response.data;
+
+      // Sort waiters by arrival_order (to guarantee replay order)
+      std::sort(mshr.waiters.begin(), mshr.waiters.end(),
+                [](const MshrWaiter &a, const MshrWaiter &b) { return a.arrival_order < b.arrival_order; });
+
+      // Replay all waiters at byte-granularity
+      for (auto &waiter : mshr.waiters) {
+        std::uint32_t offset = waiter.address % config_.line_size;
+
+        if (waiter.type == RequestType::kRead) {
+          waiter.response_data.resize(waiter.size);
+          std::copy(line.data.begin() + offset, line.data.begin() + offset + waiter.size, waiter.response_data.begin());
+        } else if (waiter.type == RequestType::kWrite) {
+          std::copy(waiter.data.begin(), waiter.data.end(), line.data.begin() + offset);
+          line.dirty = true;
+        }
+
+        waiter.response_ready = true;
+      }
+
+      // Notify replacement policy
+      replacement_->OnInsert(mshr.set, mshr.reserved_way);
+
+      // State transition
+      if (mshr.waiters.empty()) {
+        mshr.valid = false;
+        mshr.state = OwnerState::kUnsent;
+      } else {
+        mshr.state = OwnerState::kAckReady;
+      }
+      return;
+    }
+
+    int wb_idx = FindWritebackByLowerId(response.id);
+    if (wb_idx >= 0) {
+      auto &wb = next_writebacks_[wb_idx];
+      ValidateEcho(response, wb.lower_request, ResponseType::kWritebackAck);
+
+      // State transition
+      if (wb.waiters.empty()) {
+        wb.valid = false;
+        wb.state = OwnerState::kUnsent;
+      } else {
+        wb.state = OwnerState::kAckReady;
+      }
+      return;
+    }
+
+    throw std::runtime_error("ApplyLowerResponse: lower response id not found in MSHRs or Writebacks");
   }
 
   // TODO(A2-CACHE-10/11): insert a new writeback entry, or merge into the
@@ -775,20 +782,16 @@ public:
   // -- oldest entry/ID survives, bytes applied in entry-age order with the
   // newly-accepted bytes winning any overlap (this call's data is newest),
   // combined waiters bounded and sorted by (arrival_order, request id).
-  void
-  InsertWriteback(std::uint32_t address, const std::vector<std::uint8_t> &data,
-                  std::uint64_t arrival_order,
-                  const std::optional<WritebackAckWaiter> &waiter,
-                  int granted_writeback = -1,
-                  std::optional<std::uint64_t> preallocated_id = std::nullopt) {
+  void InsertWriteback(std::uint32_t address, const std::vector<std::uint8_t> &data, std::uint64_t arrival_order,
+                       const std::optional<WritebackAckWaiter> &waiter, int granted_writeback = -1,
+                       std::optional<std::uint64_t> preallocated_id = std::nullopt) {
     (void)address;
     (void)data;
     (void)arrival_order;
     (void)waiter;
     (void)granted_writeback;
     (void)preallocated_id;
-    throw std::runtime_error(
-        "CacheController::InsertWriteback: TODO(A2-CACHE-11)");
+    throw std::runtime_error("CacheController::InsertWriteback: TODO(A2-CACHE-11)");
   }
 
   void ApplyHit(const LookupDecision &decision) {
@@ -800,8 +803,7 @@ public:
       next_output_.arrival_order = AllocateArrival();
       next_output_.response = ResponseForHit(pipeline, line);
     } else {
-      WriteBytes(&line.data, pipeline.address.block, pipeline.request.address,
-                 pipeline.request.data);
+      WriteBytes(&line.data, pipeline.address.block, pipeline.request.address, pipeline.request.data);
       line.dirty = true;
       next_output_.valid = true;
       next_output_.arrival_order = AllocateArrival();
@@ -825,8 +827,7 @@ public:
     next_lookup_.valid = false;
   }
 
-  void ApplyMshrAllocation(const LookupDecision &decision,
-                           int granted_writeback) {
+  void ApplyMshrAllocation(const LookupDecision &decision, int granted_writeback) {
     const auto &pipeline = current_lookup_;
     int victim = SelectVictim(pipeline.address.set);
     const CacheLine &victim_line = current_lines_[pipeline.address.set][victim];
@@ -839,16 +840,12 @@ public:
       ids_needed = 2;
     }
 
-    std::vector<std::uint64_t> ids =
-        transaction_ids_->ReserveBatch(SourceForRole(role_), ids_needed);
+    std::vector<std::uint64_t> ids = transaction_ids_->ReserveBatch(SourceForRole(role_), ids_needed);
     std::uint64_t read_id = ids[0];
 
     if (victim_valid && victim_dirty) {
-      std::uint32_t wb_address =
-          (victim_line.tag * config_.sets + pipeline.address.set) *
-          config_.line_size;
-      InsertWriteback(wb_address, victim_line.data, AllocateArrival(),
-                      std::nullopt, granted_writeback, ids[1]);
+      std::uint32_t wb_address = (victim_line.tag * config_.sets + pipeline.address.set) * config_.line_size;
+      InsertWriteback(wb_address, victim_line.data, AllocateArrival(), std::nullopt, granted_writeback, ids[1]);
       CheckedIncrement(&next_stats_.dirty_evictions, "dirty_evictions");
     }
 
@@ -886,8 +883,7 @@ public:
   // Existing helpers: MakeWritebackWaiter.
   void ApplyWritebackForward(int granted_writeback) {
     (void)granted_writeback;
-    throw std::runtime_error(
-        "CacheController::ApplyWritebackForward: TODO(A2-CACHE-10)");
+    throw std::runtime_error("CacheController::ApplyWritebackForward: TODO(A2-CACHE-10)");
   }
 
   // TODO(A2-CACHE-13): increment exactly the one stats counter
@@ -896,8 +892,7 @@ public:
   // could apply.
   void CountLookupStall(LookupStall stall) {
     (void)stall;
-    throw std::runtime_error(
-        "CacheController::CountLookupStall: TODO(A2-CACHE-13)");
+    throw std::runtime_error("CacheController::CountLookupStall: TODO(A2-CACHE-13)");
   }
 
   // TODO(A2-CACHE-12): transition the granted MSHR/writeback UNSENT ->
@@ -905,8 +900,7 @@ public:
   // demand_bypasses (capped at 8); granting a writeback resets
   // demand_bypasses to 0 and counts writebacks_sent.
   void ApplyLowerRequestGrant() {
-    throw std::runtime_error(
-        "CacheController::ApplyLowerRequestGrant: TODO(A2-CACHE-12)");
+    throw std::runtime_error("CacheController::ApplyLowerRequestGrant: TODO(A2-CACHE-12)");
   }
 
   // TODO(A2-CACHE-12): the single mutating call per cycle. Apply only the
@@ -924,8 +918,7 @@ public:
   // error taxonomy.
   // Existing helpers: ResponseIntent, LowerRequestIntent, StageIntent,
   // ValidateInbound, AllocateArrival, MapAddress.
-  void Operate(std::uint64_t current_cycle, const CacheRequest *upper_request,
-               const CacheResponse *lower_response,
+  void Operate(std::uint64_t current_cycle, const CacheRequest *upper_request, const CacheResponse *lower_response,
                const CacheOperateGrants &grants) {
     (void)current_cycle;
     (void)upper_request;
@@ -1004,8 +997,7 @@ public:
       snapshot.writebacks.push_back(std::move(row));
     }
     for (std::uint32_t set = 0; set < config_.sets; ++set) {
-      const std::vector<std::uint32_t> replacement =
-          replacement_->DebugState(set);
+      const std::vector<std::uint32_t> replacement = replacement_->DebugState(set);
       snapshot.replacement.push_back({set, replacement});
       for (std::uint32_t way = 0; way < config_.ways; ++way) {
         std::uint64_t owner = kNoOriginId;
@@ -1021,8 +1013,7 @@ public:
   }
 
   bool HasWork() const {
-    if (current_index_.valid || current_lookup_.valid ||
-        current_output_.valid) {
+    if (current_index_.valid || current_lookup_.valid || current_output_.valid) {
       return true;
     }
     return std::any_of(current_mshrs_.begin(), current_mshrs_.end(),
