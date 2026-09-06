@@ -314,18 +314,71 @@ public:
     return way;
   }
 
-  // TODO(A2-CACHE-11): compute the transitive UNSENT overlap closure for a
-  // prospective writeback of [address, address+size); hold
-  // (kWritebackOrder) on any IN_FLIGHT or same-cycle-granted overlap;
-  // enforce the bounded combined waiter count; choose the oldest survivor
-  // by (arrival_order, id).
   WritebackPlan PlanWriteback(std::uint32_t address, std::uint32_t size, std::size_t new_waiters,
                               int granted_writeback = -1) const {
-    (void)address;
-    (void)size;
-    (void)new_waiters;
-    (void)granted_writeback;
-    throw std::runtime_error("CacheController::PlanWriteback: TODO(A2-CACHE-11)");
+    WritebackPlan plan;
+    std::vector<int> closure;
+    std::vector<bool> in_closure(current_writebacks_.size(), false);
+    std::uint32_t c_addr = address;
+    std::uint32_t c_size = size;
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      for (std::size_t i = 0; i < current_writebacks_.size(); ++i) {
+        if (current_writebacks_[i].valid && !in_closure[i]) {
+          if (RangesOverlap(c_addr, c_size, current_writebacks_[i].address, current_writebacks_[i].size)) {
+            in_closure[i] = true;
+            closure.push_back(i);
+            std::uint32_t min_addr = std::min(c_addr, current_writebacks_[i].address);
+            std::uint64_t max_end = std::max(static_cast<std::uint64_t>(c_addr) + c_size,
+                                             static_cast<std::uint64_t>(current_writebacks_[i].address) + current_writebacks_[i].size);
+            c_addr = min_addr;
+            c_size = max_end - min_addr;
+            changed = true;
+          }
+        }
+      }
+    }
+
+    std::size_t total_waiters = new_waiters;
+    for (int i : closure) {
+      if (current_writebacks_[i].state != OwnerState::kUnsent || i == granted_writeback) {
+        plan.allowed = false;
+        plan.stall = LookupStall::kWritebackOrder;
+        return plan;
+      }
+      total_waiters += current_writebacks_[i].waiters.size();
+    }
+
+    if (total_waiters > config_.writeback_waiters_per_entry) {
+      plan.allowed = false;
+      plan.stall = LookupStall::kWritebackWaiterFull;
+      return plan;
+    }
+
+    if (closure.empty() && FindFreeWriteback() < 0) {
+      plan.allowed = false;
+      plan.stall = LookupStall::kWritebackFull;
+      return plan;
+    }
+
+    plan.allowed = true;
+    for (int i : closure) {
+      plan.merge_entries.push_back(i);
+    }
+    
+    if (!closure.empty()) {
+      int survivor = closure[0];
+      for (std::size_t i = 1; i < closure.size(); ++i) {
+        const auto &w1 = current_writebacks_[closure[i]];
+        const auto &w2 = current_writebacks_[survivor];
+        if (std::tie(w1.arrival_order, w1.lower_request.id) < std::tie(w2.arrival_order, w2.lower_request.id)) {
+          survivor = closure[i];
+        }
+      }
+      plan.survivor = survivor;
+    }
+    return plan;
   }
 
   bool OutputWillDrain(bool response_granted) const {
@@ -719,7 +772,7 @@ public:
     }
   }
 
-  // TODO(A2-CACHE-/10): for an owned fill -- install the complete line
+  // TODO(A2-CACHE-10): for an owned fill -- install the complete line
   // into its already-reserved way, replay every waiter once in arrival
   // order at byte granularity (capturing each load's bytes at its own
   // replay point, applying each store's bytes), mark dirty if any waiter
@@ -800,18 +853,58 @@ public:
     }
 
     if (plan.survivor >= 0) {
-      // Merge into survivor
-      auto &wb = next_writebacks_[plan.survivor];
-      WriteBytes(&wb.data, wb.address, address, data);
-      WriteBytes(&wb.lower_request.data, wb.address, address, data);
-      wb.arrival_order = std::min(wb.arrival_order, arrival_order);
-      if (waiter) {
-        wb.waiters.push_back(*waiter);
-        std::sort(wb.waiters.begin(), wb.waiters.end(),
-                  [](const WritebackAckWaiter &a, const WritebackAckWaiter &b) {
-                    return std::tie(a.arrival_order, a.request_id) < std::tie(b.arrival_order, b.request_id);
-                  });
+      // Find bounding box
+      std::uint32_t c_addr = address;
+      std::uint64_t max_end = address + data.size();
+      for (std::size_t idx : plan.merge_entries) {
+        c_addr = std::min(c_addr, current_writebacks_[idx].address);
+        max_end = std::max(max_end, static_cast<std::uint64_t>(current_writebacks_[idx].address) + current_writebacks_[idx].size);
       }
+      std::uint32_t c_size = max_end - c_addr;
+      
+      // Sort merge entries oldest to newest
+      std::vector<std::size_t> sorted_merge = plan.merge_entries;
+      std::sort(sorted_merge.begin(), sorted_merge.end(), [&](std::size_t a, std::size_t b) {
+        const auto &wa = current_writebacks_[a];
+        const auto &wb = current_writebacks_[b];
+        return std::tie(wa.arrival_order, wa.lower_request.id) < std::tie(wb.arrival_order, wb.lower_request.id);
+      });
+
+      // Prepare merged data
+      std::vector<std::uint8_t> merged_data(c_size, 0);
+      std::vector<WritebackAckWaiter> merged_waiters;
+      
+      for (std::size_t idx : sorted_merge) {
+        const auto &w = current_writebacks_[idx];
+        WriteBytes(&merged_data, c_addr, w.address, w.data);
+        for (const auto &w_waiter : w.waiters) {
+          merged_waiters.push_back(w_waiter);
+        }
+        if (idx != static_cast<std::size_t>(plan.survivor)) {
+          next_writebacks_[idx].valid = false;
+        }
+      }
+      
+      // Apply new data (wins overlaps)
+      WriteBytes(&merged_data, c_addr, address, data);
+      
+      auto &surv = next_writebacks_[plan.survivor];
+      surv.address = c_addr;
+      surv.size = c_size;
+      surv.data = merged_data;
+      surv.lower_request.address = c_addr;
+      surv.lower_request.size = c_size;
+      surv.lower_request.data = merged_data;
+      surv.arrival_order = std::min(surv.arrival_order, arrival_order);
+      
+      if (waiter) {
+        merged_waiters.push_back(*waiter);
+      }
+      
+      std::sort(merged_waiters.begin(), merged_waiters.end(), [](const WritebackAckWaiter &a, const WritebackAckWaiter &b) {
+        return std::tie(a.arrival_order, a.request_id) < std::tie(b.arrival_order, b.request_id);
+      });
+      surv.waiters = merged_waiters;
     } else {
       // Allocate new entry
       int free_idx = FindFreeWriteback();
