@@ -353,12 +353,11 @@ public:
         "CacheController::PlanWriteback: TODO(A2-CACHE-11)");
   }
 
-  // TODO(A2-CACHE-05): true iff a granted upper response this cycle would
-  // drain current OUTPUT (used to plan same-cycle OUTPUT reuse).
   bool OutputWillDrain(bool response_granted) const {
-    (void)response_granted;
-    throw std::runtime_error(
-        "CacheController::OutputWillDrain: TODO(A2-CACHE-05)");
+    if (!response_granted || !current_output_.valid) {
+      return false;
+    }
+    return SelectResponse().owner == ResponseOwner::kOutput;
   }
 
   // TODO(A2-CACHE-07/08/10): the parallel LOOKUP decision -- hit, MSHR
@@ -374,24 +373,60 @@ public:
         "CacheController::DecideLookup: TODO(A2-CACHE-07)");
   }
 
-  // TODO(A2-CACHE-05): plan three-stage backpressure from current_* state
-  // and the resolved grant flags only. accept_lower_response must be true
-  // iff lower_response is a recognized, correctly-typed, echo-valid owner
-  // (MSHR fill or writeback ack) currently IN_FLIGHT. An owned demand fill
-  // takes the combined LOOKUP port for the cycle. accept_upper_request must
-  // reflect whether INDEX is free or about to be vacated into LOOKUP this
-  // cycle. Must not mutate state.
-  // Existing helpers: FindMshrByLowerId, FindWritebackByLowerId, ValidateEcho,
-  // ValidateInbound, OutputWillDrain, DecideLookup.
   CacheStageIntent StageIntent(const CacheRequest *upper_request,
                                const CacheResponse *lower_response,
                                bool response_granted,
                                bool lower_request_granted) const {
     (void)upper_request;
-    (void)lower_response;
-    (void)response_granted;
     (void)lower_request_granted;
-    throw std::runtime_error("CacheController::StageIntent: TODO(A2-CACHE-05)");
+    CacheStageIntent intent;
+
+    intent.accept_lower_response = false;
+    if (lower_response != nullptr) {
+      int mshr_idx = FindMshrByLowerId(lower_response->id);
+      if (mshr_idx >= 0) {
+        const MshrEntry &mshr = current_mshrs_[mshr_idx];
+        if (mshr.state == OwnerState::kInFlight &&
+            lower_response->type == ResponseType::kReadData) {
+          try {
+            ValidateEcho(*lower_response, mshr.lower_request,
+                         ResponseType::kReadData);
+            intent.accept_lower_response = true;
+          } catch (...) {
+          }
+        }
+      }
+
+      if (!intent.accept_lower_response) {
+        int wb_idx = FindWritebackByLowerId(lower_response->id);
+        if (wb_idx >= 0) {
+          const WritebackEntry &wb = current_writebacks_[wb_idx];
+          if (wb.state == OwnerState::kInFlight &&
+              lower_response->type == ResponseType::kWritebackAck) {
+            try {
+              ValidateEcho(*lower_response, wb.lower_request,
+                           ResponseType::kWritebackAck);
+              intent.accept_lower_response = true;
+            } catch (...) {
+            }
+          }
+        }
+      }
+    }
+
+    const bool output_drains = OutputWillDrain(response_granted);
+    const bool output_has_space = !current_output_.valid || output_drains;
+
+    const bool lookup_can_advance = current_lookup_.valid && output_has_space;
+    const bool lookup_is_free = !current_lookup_.valid;
+
+    const bool index_can_advance =
+        current_index_.valid && (lookup_is_free || lookup_can_advance);
+    const bool index_is_free = !current_index_.valid;
+
+    intent.accept_upper_request = index_is_free || index_can_advance;
+
+    return intent;
   }
 
   // TODO(A2-CACHE-08): construct a waiter (initialize both response flags
