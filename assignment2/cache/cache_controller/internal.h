@@ -794,13 +794,60 @@ public:
   void InsertWriteback(std::uint32_t address, const std::vector<std::uint8_t> &data, std::uint64_t arrival_order,
                        const std::optional<WritebackAckWaiter> &waiter, int granted_writeback = -1,
                        std::optional<std::uint64_t> preallocated_id = std::nullopt) {
-    (void)address;
-    (void)data;
-    (void)arrival_order;
-    (void)waiter;
-    (void)granted_writeback;
-    (void)preallocated_id;
-    throw std::runtime_error("CacheController::InsertWriteback: TODO(A2-CACHE-11)");
+    WritebackPlan plan = PlanWriteback(address, data.size(), waiter ? 1 : 0, granted_writeback);
+    if (!plan.allowed) {
+      throw std::runtime_error("InsertWriteback called when not allowed by PlanWriteback");
+    }
+
+    if (plan.survivor >= 0) {
+      // Merge into survivor
+      auto &wb = next_writebacks_[plan.survivor];
+      WriteBytes(&wb.data, wb.address, address, data);
+      WriteBytes(&wb.lower_request.data, wb.address, address, data);
+      wb.arrival_order = std::min(wb.arrival_order, arrival_order);
+      if (waiter) {
+        wb.waiters.push_back(*waiter);
+        std::sort(wb.waiters.begin(), wb.waiters.end(),
+                  [](const WritebackAckWaiter &a, const WritebackAckWaiter &b) {
+                    return std::tie(a.arrival_order, a.request_id) < std::tie(b.arrival_order, b.request_id);
+                  });
+      }
+    } else {
+      // Allocate new entry
+      int free_idx = FindFreeWriteback();
+      if (free_idx < 0) {
+        throw std::runtime_error("no free writeback entry available despite PlanWriteback approval");
+      }
+      auto &wb = next_writebacks_[free_idx];
+      wb.valid = true;
+      wb.address = address;
+      wb.size = data.size();
+      wb.data = data;
+      wb.arrival_order = arrival_order;
+      wb.state = OwnerState::kUnsent;
+
+      std::uint64_t id;
+      if (preallocated_id.has_value()) {
+        id = *preallocated_id;
+      } else {
+        std::vector<std::uint64_t> ids = transaction_ids_->ReserveBatch(SourceForRole(role_), 1);
+        id = ids[0];
+      }
+
+      wb.lower_request.id = id;
+      wb.lower_request.origin_id = kNoOriginId;
+      wb.lower_request.sequence = kNoSequence;
+      wb.lower_request.generation = 0;
+      wb.lower_request.address = address;
+      wb.lower_request.size = data.size();
+      wb.lower_request.type = RequestType::kWriteback;
+      wb.lower_request.data = data;
+      
+      wb.waiters.clear();
+      if (waiter) {
+        wb.waiters.push_back(*waiter);
+      }
+    }
   }
 
   void ApplyHit(const LookupDecision &decision) {
