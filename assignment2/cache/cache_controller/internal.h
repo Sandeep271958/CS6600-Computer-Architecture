@@ -314,18 +314,71 @@ public:
     return way;
   }
 
-  // TODO(A2-CACHE-11): compute the transitive UNSENT overlap closure for a
-  // prospective writeback of [address, address+size); hold
-  // (kWritebackOrder) on any IN_FLIGHT or same-cycle-granted overlap;
-  // enforce the bounded combined waiter count; choose the oldest survivor
-  // by (arrival_order, id).
   WritebackPlan PlanWriteback(std::uint32_t address, std::uint32_t size, std::size_t new_waiters,
                               int granted_writeback = -1) const {
-    (void)address;
-    (void)size;
-    (void)new_waiters;
-    (void)granted_writeback;
-    throw std::runtime_error("CacheController::PlanWriteback: TODO(A2-CACHE-11)");
+    WritebackPlan plan;
+    std::vector<int> closure;
+    std::vector<bool> in_closure(current_writebacks_.size(), false);
+    std::uint32_t c_addr = address;
+    std::uint32_t c_size = size;
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      for (std::size_t i = 0; i < current_writebacks_.size(); ++i) {
+        if (current_writebacks_[i].valid && !in_closure[i]) {
+          if (RangesOverlap(c_addr, c_size, current_writebacks_[i].address, current_writebacks_[i].size)) {
+            in_closure[i] = true;
+            closure.push_back(i);
+            std::uint32_t min_addr = std::min(c_addr, current_writebacks_[i].address);
+            std::uint64_t max_end = std::max(static_cast<std::uint64_t>(c_addr) + c_size,
+                                             static_cast<std::uint64_t>(current_writebacks_[i].address) + current_writebacks_[i].size);
+            c_addr = min_addr;
+            c_size = max_end - min_addr;
+            changed = true;
+          }
+        }
+      }
+    }
+
+    std::size_t total_waiters = new_waiters;
+    for (int i : closure) {
+      if (current_writebacks_[i].state != OwnerState::kUnsent || i == granted_writeback) {
+        plan.allowed = false;
+        plan.stall = LookupStall::kWritebackOrder;
+        return plan;
+      }
+      total_waiters += current_writebacks_[i].waiters.size();
+    }
+
+    if (total_waiters > config_.writeback_waiters_per_entry) {
+      plan.allowed = false;
+      plan.stall = LookupStall::kWritebackWaiterFull;
+      return plan;
+    }
+
+    if (closure.empty() && FindFreeWriteback() < 0) {
+      plan.allowed = false;
+      plan.stall = LookupStall::kWritebackFull;
+      return plan;
+    }
+
+    plan.allowed = true;
+    for (int i : closure) {
+      plan.merge_entries.push_back(i);
+    }
+    
+    if (!closure.empty()) {
+      int survivor = closure[0];
+      for (std::size_t i = 1; i < closure.size(); ++i) {
+        const auto &w1 = current_writebacks_[closure[i]];
+        const auto &w2 = current_writebacks_[survivor];
+        if (std::tie(w1.arrival_order, w1.lower_request.id) < std::tie(w2.arrival_order, w2.lower_request.id)) {
+          survivor = closure[i];
+        }
+      }
+      plan.survivor = survivor;
+    }
+    return plan;
   }
 
   bool OutputWillDrain(bool response_granted) const {
@@ -356,7 +409,14 @@ public:
     }
 
     if (pipeline.request.type == RequestType::kWriteback) {
-      throw std::runtime_error("CacheController::DecideLookup: TODO(A2-CACHE-10)");
+      WritebackPlan plan = PlanWriteback(pipeline.request.address, pipeline.request.size, 1, granted_writeback);
+      if (!plan.allowed) {
+        decision.kind = LookupKind::kHold;
+        decision.stall = plan.stall;
+      } else {
+        decision.kind = LookupKind::kWritebackForward;
+      }
+      return decision;
     }
 
     int mshr = FindMshrByBlock(pipeline.address.block);
@@ -468,10 +528,17 @@ public:
     return w;
   }
 
-  // TODO(A2-CACHE-10)
   WritebackAckWaiter MakeWritebackWaiter(const PipelineEntry &pipeline) const {
-    (void)pipeline;
-    throw std::runtime_error("CacheController::MakeWritebackWaiter: TODO(A2-CACHE-10)");
+    WritebackAckWaiter w;
+    w.request_id = pipeline.request.id;
+    w.origin_id = pipeline.request.origin_id;
+    w.sequence = pipeline.request.sequence;
+    w.arrival_order = pipeline.arrival_order;
+    w.generation = pipeline.request.generation;
+    w.address = pipeline.request.address;
+    w.size = pipeline.request.size;
+    w.response_sent = false;
+    return w;
   }
 
   std::uint64_t AllocateArrival() {
@@ -728,14 +795,6 @@ public:
     }
   }
 
-  // TODO(A2-CACHE-10): for an owned fill -- install the complete line
-  // into its already-reserved way, replay every waiter once in arrival
-  // order at byte granularity (capturing each load's bytes at its own
-  // replay point, applying each store's bytes), mark dirty if any waiter
-  // wrote, call replacement_->OnInsert exactly once. For an owned
-  // writeback ack -- transition ACK_READY (or free immediately if it had
-  // no waiters).
-  // Existing helpers: FindMshrByLowerId, FindWritebackByLowerId, ValidateEcho.
   void ApplyLowerResponse(const CacheResponse &response) {
     int mshr_idx = FindMshrByLowerId(response.id);
     if (mshr_idx >= 0) {
@@ -800,21 +859,103 @@ public:
     throw std::runtime_error("ApplyLowerResponse: lower response id not found in MSHRs or Writebacks");
   }
 
-  // TODO(A2-CACHE-10/11): insert a new writeback entry, or merge into the
-  // transitive-overlap survivor chosen by a matching PlanWriteback() call
-  // -- oldest entry/ID survives, bytes applied in entry-age order with the
-  // newly-accepted bytes winning any overlap (this call's data is newest),
-  // combined waiters bounded and sorted by (arrival_order, request id).
   void InsertWriteback(std::uint32_t address, const std::vector<std::uint8_t> &data, std::uint64_t arrival_order,
                        const std::optional<WritebackAckWaiter> &waiter, int granted_writeback = -1,
                        std::optional<std::uint64_t> preallocated_id = std::nullopt) {
-    (void)address;
-    (void)data;
-    (void)arrival_order;
-    (void)waiter;
-    (void)granted_writeback;
-    (void)preallocated_id;
-    throw std::runtime_error("CacheController::InsertWriteback: TODO(A2-CACHE-11)");
+    WritebackPlan plan = PlanWriteback(address, data.size(), waiter ? 1 : 0, granted_writeback);
+    if (!plan.allowed) {
+      throw std::runtime_error("InsertWriteback called when not allowed by PlanWriteback");
+    }
+
+    if (plan.survivor >= 0) {
+      // Find bounding box
+      std::uint32_t c_addr = address;
+      std::uint64_t max_end = address + data.size();
+      for (std::size_t idx : plan.merge_entries) {
+        c_addr = std::min(c_addr, current_writebacks_[idx].address);
+        max_end = std::max(max_end, static_cast<std::uint64_t>(current_writebacks_[idx].address) + current_writebacks_[idx].size);
+      }
+      std::uint32_t c_size = max_end - c_addr;
+      
+      // Sort merge entries oldest to newest
+      std::vector<std::size_t> sorted_merge = plan.merge_entries;
+      std::sort(sorted_merge.begin(), sorted_merge.end(), [&](std::size_t a, std::size_t b) {
+        const auto &wa = current_writebacks_[a];
+        const auto &wb = current_writebacks_[b];
+        return std::tie(wa.arrival_order, wa.lower_request.id) < std::tie(wb.arrival_order, wb.lower_request.id);
+      });
+
+      // Prepare merged data
+      std::vector<std::uint8_t> merged_data(c_size, 0);
+      std::vector<WritebackAckWaiter> merged_waiters;
+      
+      for (std::size_t idx : sorted_merge) {
+        const auto &w = current_writebacks_[idx];
+        WriteBytes(&merged_data, c_addr, w.address, w.data);
+        for (const auto &w_waiter : w.waiters) {
+          merged_waiters.push_back(w_waiter);
+        }
+        if (idx != static_cast<std::size_t>(plan.survivor)) {
+          next_writebacks_[idx].valid = false;
+        }
+      }
+      
+      // Apply new data (wins overlaps)
+      WriteBytes(&merged_data, c_addr, address, data);
+      
+      auto &surv = next_writebacks_[plan.survivor];
+      surv.address = c_addr;
+      surv.size = c_size;
+      surv.data = merged_data;
+      surv.lower_request.address = c_addr;
+      surv.lower_request.size = c_size;
+      surv.lower_request.data = merged_data;
+      surv.arrival_order = std::min(surv.arrival_order, arrival_order);
+      
+      if (waiter) {
+        merged_waiters.push_back(*waiter);
+      }
+      
+      std::sort(merged_waiters.begin(), merged_waiters.end(), [](const WritebackAckWaiter &a, const WritebackAckWaiter &b) {
+        return std::tie(a.arrival_order, a.request_id) < std::tie(b.arrival_order, b.request_id);
+      });
+      surv.waiters = merged_waiters;
+    } else {
+      // Allocate new entry
+      int free_idx = FindFreeWriteback();
+      if (free_idx < 0) {
+        throw std::runtime_error("no free writeback entry available despite PlanWriteback approval");
+      }
+      auto &wb = next_writebacks_[free_idx];
+      wb.valid = true;
+      wb.address = address;
+      wb.size = data.size();
+      wb.data = data;
+      wb.arrival_order = arrival_order;
+      wb.state = OwnerState::kUnsent;
+
+      std::uint64_t id;
+      if (preallocated_id.has_value()) {
+        id = *preallocated_id;
+      } else {
+        std::vector<std::uint64_t> ids = transaction_ids_->ReserveBatch(SourceForRole(role_), 1);
+        id = ids[0];
+      }
+
+      wb.lower_request.id = id;
+      wb.lower_request.origin_id = kNoOriginId;
+      wb.lower_request.sequence = kNoSequence;
+      wb.lower_request.generation = 0;
+      wb.lower_request.address = address;
+      wb.lower_request.size = data.size();
+      wb.lower_request.type = RequestType::kWriteback;
+      wb.lower_request.data = data;
+      
+      wb.waiters.clear();
+      if (waiter) {
+        wb.waiters.push_back(*waiter);
+      }
+    }
   }
 
   void ApplyHit(const LookupDecision &decision) {
@@ -901,12 +1042,11 @@ public:
     next_lookup_.valid = false;
   }
 
-  // TODO(A2-CACHE-10): forward an upper writeback into InsertWriteback with
-  // its own ack waiter; clear LOOKUP.
-  // Existing helpers: MakeWritebackWaiter.
   void ApplyWritebackForward(int granted_writeback) {
-    (void)granted_writeback;
-    throw std::runtime_error("CacheController::ApplyWritebackForward: TODO(A2-CACHE-10)");
+    const auto &pipeline = current_lookup_;
+    InsertWriteback(pipeline.request.address, pipeline.request.data, pipeline.arrival_order,
+                    MakeWritebackWaiter(pipeline), granted_writeback);
+    next_lookup_.valid = false;
   }
 
   // increment exactly the one stats counter
