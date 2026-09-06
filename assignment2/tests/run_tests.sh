@@ -4,7 +4,7 @@ set -eu
 CXX=${CXX:-g++}
 CXXFLAGS=${CXXFLAGS:--std=c++17 -Wall -Wextra -Wpedantic -O2}
 
-$CXX $CXXFLAGS -I. tests/unit_tests.cc execution_unit.cc framework_api.cc cache/cache_config.cc \
+$CXX $CXXFLAGS -I. tests/unit_tests.cc execution_unit.cc execution_unit/impl.cc execution_unit/helpers.cc framework_api.cc cache/cache_config.cc \
   cache/replacement.cc cache/cache_controller.cc framework/simple_memory.cc \
   -o tests/unit_tests
 ./tests/unit_tests

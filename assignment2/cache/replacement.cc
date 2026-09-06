@@ -29,10 +29,11 @@ namespace {
 class TreePlru final : public ReplacementPolicy {
 public:
   TreePlru(std::uint32_t sets, std::uint32_t ways) : sets_(sets), ways_(ways), current_(), planned_() {
-    if (!IsPowerOfTwo(ways_) || ways_ < 2) {
-      throw std::runtime_error("Tree-PLRU requires power-of-two ways >= 2");
+    if (!IsPowerOfTwo(ways_) || ways_ == 0) {
+      throw std::runtime_error("Tree-PLRU requires power-of-two ways >= 1");
     }
 
+    // ways-1 internal nodes (0 nodes for the degenerate 1-way case)
     current_.assign(sets_, std::vector<bool>(ways_ - 1));
     planned_.assign(sets_, std::vector<bool>(ways_ - 1));
   }
@@ -103,7 +104,8 @@ public:
 
     while (node < ways_ - 1) {
       std::uint32_t half_span = span / 2;
-      bool go_right = planned_[set][node];
+      // PeekVictim is observational: must read current_ state only (spec §15.3)
+      bool go_right = current_[set][node];
 
       bool left_eligible = false;
       bool right_eligible = false;

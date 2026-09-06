@@ -47,16 +47,16 @@ long as your changes compile.
 
 Then use the interactive REPL commands (one per line, then Enter):
 
-| Cmd | What it does |
-|---|---|
-| `n [k]`   | run up to `k` cycles (default 1); stops early on HALT |
-| `p`       | print machine state (registers + memory + status) |
-| `pipe`    | print the pipeline snapshot |
-| `cache`   | print all cache state (lines, MSHRs, writebacks) |
-| `graph`   | print the processor's structural graph |
-| `s`       | print statistics / counters |
-| `reset`   | reset the processor to boundary 0 |
-| `q`       | quit |
+| Cmd       | What it does                                           |
+| --------- | ------------------------------------------------------ |
+| `n [k]` | run up to`k` cycles (default 1); stops early on HALT |
+| `p`     | print machine state (registers + memory + status)      |
+| `pipe`  | print the pipeline snapshot                            |
+| `cache` | print all cache state (lines, MSHRs, writebacks)       |
+| `graph` | print the processor's structural graph                 |
+| `s`     | print statistics / counters                            |
+| `reset` | reset the processor to boundary 0                      |
+| `q`     | quit                                                   |
 
 Example — run `example.pisa` for up to 1000 cycles then print state:
 
@@ -121,6 +121,7 @@ printf 'n 1000\ns\nreset\nn 1000\ns\nq\n' | \
 ```
 
 ## 7. TODO tracking
+
 A helper script counts
 what's left:
 
@@ -131,7 +132,7 @@ what's left:
 
 ## 8. Submission
 
-Follow the PDF exactly: place this entire folder inside your 
+Follow the PDF exactly: place this entire folder inside your
 `pipesim` repository under a new top-level directory literally named
 **`asignment 2`** (all lowercase, `asignment` with one `s` — the PDF
 confirms this spelling is intentional). Do not touch `assignment 1`.

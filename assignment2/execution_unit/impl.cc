@@ -68,5 +68,6 @@ ExecutionResult ExecutionPipeline::Impl::ResultFor(const ExecutionOperation &ope
     result.store_value = operation.store_value;
     return result;
   }
+  throw std::runtime_error("ResultFor: unknown execution unit kind");
 }
 } // namespace pipesim

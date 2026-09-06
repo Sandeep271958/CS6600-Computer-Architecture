@@ -80,5 +80,7 @@ std::unique_ptr<Processor> BuildDesign(Machine *machine) {
   builder.Connect(id_issue_node, agu_node, ConnectionType::kClockedData);
 
   builder.Connect(agu_node, l1d, ConnectionType::kData);
+
+  return builder.Build(machine);
 }
 } // namespace pipesim

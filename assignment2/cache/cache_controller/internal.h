@@ -331,7 +331,8 @@ public:
             closure.push_back(i);
             std::uint32_t min_addr = std::min(c_addr, current_writebacks_[i].address);
             std::uint64_t max_end = std::max(static_cast<std::uint64_t>(c_addr) + c_size,
-                                             static_cast<std::uint64_t>(current_writebacks_[i].address) + current_writebacks_[i].size);
+                                             static_cast<std::uint64_t>(current_writebacks_[i].address) +
+                                                 current_writebacks_[i].size);
             c_addr = min_addr;
             c_size = max_end - min_addr;
             changed = true;
@@ -366,7 +367,7 @@ public:
     for (int i : closure) {
       plan.merge_entries.push_back(i);
     }
-    
+
     if (!closure.empty()) {
       int survivor = closure[0];
       for (std::size_t i = 1; i < closure.size(); ++i) {
@@ -772,9 +773,27 @@ public:
       next_output_.valid = false;
     } else if (choice.owner == ResponseOwner::kMshr) {
       MshrEntry &mshr = next_mshrs_[choice.entry];
+      // Mark the chosen waiter as sent (spec: "mark the candidate as sent")
+      mshr.waiters[choice.waiter].response_sent = true;
 
       bool all_sent = true;
+      for (const auto &w : mshr.waiters) {
+        if (!w.response_sent) {
+          all_sent = false;
+          break;
+        }
+      }
+      if (all_sent) {
+        // Unpin the reserved way before freeing the MSHR (spec: "unpinning its way")
+        next_lines_[mshr.set][mshr.reserved_way].reserved = false;
+        mshr.valid = false;
+      }
+    } else if (choice.owner == ResponseOwner::kWriteback) {
+      WritebackEntry &wb = next_writebacks_[choice.entry];
+      // Mark the chosen waiter as sent
+      wb.waiters[choice.waiter].response_sent = true;
 
+      bool all_sent = true;
       for (const auto &w : wb.waiters) {
         if (!w.response_sent) {
           all_sent = false;
@@ -833,10 +852,12 @@ public:
 
       // State transition
       if (mshr.waiters.empty()) {
+        // No waiters: unpin way and free immediately
+        next_lines_[mshr.set][mshr.reserved_way].reserved = false;
         mshr.valid = false;
-        mshr.state = OwnerState::kUnsent;
       } else {
-        mshr.state = OwnerState::kAckReady;
+        // Waiters exist: transition to kResponding so SelectResponse can offer them
+        mshr.state = OwnerState::kResponding;
       }
       return;
     }
@@ -873,10 +894,11 @@ public:
       std::uint64_t max_end = address + data.size();
       for (std::size_t idx : plan.merge_entries) {
         c_addr = std::min(c_addr, current_writebacks_[idx].address);
-        max_end = std::max(max_end, static_cast<std::uint64_t>(current_writebacks_[idx].address) + current_writebacks_[idx].size);
+        max_end = std::max(max_end, static_cast<std::uint64_t>(current_writebacks_[idx].address) +
+                                        current_writebacks_[idx].size);
       }
       std::uint32_t c_size = max_end - c_addr;
-      
+
       // Sort merge entries oldest to newest
       std::vector<std::size_t> sorted_merge = plan.merge_entries;
       std::sort(sorted_merge.begin(), sorted_merge.end(), [&](std::size_t a, std::size_t b) {
@@ -888,7 +910,7 @@ public:
       // Prepare merged data
       std::vector<std::uint8_t> merged_data(c_size, 0);
       std::vector<WritebackAckWaiter> merged_waiters;
-      
+
       for (std::size_t idx : sorted_merge) {
         const auto &w = current_writebacks_[idx];
         WriteBytes(&merged_data, c_addr, w.address, w.data);
@@ -899,10 +921,10 @@ public:
           next_writebacks_[idx].valid = false;
         }
       }
-      
+
       // Apply new data (wins overlaps)
       WriteBytes(&merged_data, c_addr, address, data);
-      
+
       auto &surv = next_writebacks_[plan.survivor];
       surv.address = c_addr;
       surv.size = c_size;
@@ -911,14 +933,15 @@ public:
       surv.lower_request.size = c_size;
       surv.lower_request.data = merged_data;
       surv.arrival_order = std::min(surv.arrival_order, arrival_order);
-      
+
       if (waiter) {
         merged_waiters.push_back(*waiter);
       }
-      
-      std::sort(merged_waiters.begin(), merged_waiters.end(), [](const WritebackAckWaiter &a, const WritebackAckWaiter &b) {
-        return std::tie(a.arrival_order, a.request_id) < std::tie(b.arrival_order, b.request_id);
-      });
+
+      std::sort(merged_waiters.begin(), merged_waiters.end(),
+                [](const WritebackAckWaiter &a, const WritebackAckWaiter &b) {
+                  return std::tie(a.arrival_order, a.request_id) < std::tie(b.arrival_order, b.request_id);
+                });
       surv.waiters = merged_waiters;
     } else {
       // Allocate new entry
@@ -950,7 +973,7 @@ public:
       wb.lower_request.size = data.size();
       wb.lower_request.type = RequestType::kWriteback;
       wb.lower_request.data = data;
-      
+
       wb.waiters.clear();
       if (waiter) {
         wb.waiters.push_back(*waiter);
@@ -1056,15 +1079,13 @@ public:
   void CountLookupStall(LookupStall stall) {
 
     switch (stall) {
-    case LookupStall ::kNone:
-      break;
+    case LookupStall::kNone:
+      break; // spec: kNone counts nothing
 
     case LookupStall::kOutput:
-      CheckedIncrement(&next_stats_.output_queue_stalls, "output_queue_stalls");
-      break;
+      break; // spec: kOutput counts nothing
     case LookupStall::kMshrWaiterFull:
-      CheckedIncrement(&next_stats_.mshr_waiter_full_stalls,
-                       "mshr_waiter_full_stalls");
+      CheckedIncrement(&next_stats_.mshr_waiter_full_stalls, "mshr_waiter_full_stalls");
       break;
     case LookupStall::kMshrFull:
       CheckedIncrement(&next_stats_.mshr_full_stalls, "mshr_full_stalls");
@@ -1073,16 +1094,13 @@ public:
       CheckedIncrement(&next_stats_.reserved_way_stalls, "reserved_way_stalls");
       break;
     case LookupStall::kWritebackOrder:
-      CheckedIncrement(&next_stats_.writeback_order_stalls,
-                       "writeback_order_stalls");
+      CheckedIncrement(&next_stats_.writeback_order_stalls, "writeback_order_stalls");
       break;
     case LookupStall::kWritebackWaiterFull:
-      CheckedIncrement(&next_stats_.writeback_waiter_full_stalls,
-                       "writeback_waiter_full_stalls");
+      CheckedIncrement(&next_stats_.writeback_waiter_full_stalls, "writeback_waiter_full_stalls");
       break;
     case LookupStall::kWritebackFull:
-      CheckedIncrement(&next_stats_.writeback_full_stalls,
-                       "writeback_full_stalls");
+      CheckedIncrement(&next_stats_.writeback_full_stalls, "writeback_full_stalls");
       break;
     }
   }
@@ -1099,15 +1117,17 @@ public:
     }
     if (choice.owner == RequestOwner::kMshr) {
       next_mshrs_[choice.entry].state = OwnerState::kInFlight;
-      std::size_t wb_idx = choice.oldest_eligible_writeback.value();
-      if (next_writebacks_[wb_idx].demand_bypasses < 8) {
-        next_writebacks_[wb_idx].demand_bypasses++;
+      // Granting a demand: bump the oldest eligible writeback's demand_bypasses (capped at 8)
+      if (choice.oldest_eligible_writeback.has_value()) {
+        std::size_t wb_idx = choice.oldest_eligible_writeback.value();
+        if (next_writebacks_[wb_idx].demand_bypasses < 8) {
+          next_writebacks_[wb_idx].demand_bypasses++;
+        }
       }
-
     } else if (choice.owner == RequestOwner::kWriteback) {
       next_writebacks_[choice.entry].state = OwnerState::kInFlight;
       next_writebacks_[choice.entry].demand_bypasses = 0;
-      CheckedIncrement(&next_stats_, "writebacks_sent");
+      CheckedIncrement(&next_stats_.writebacks_sent, "writebacks_sent");
     }
   }
 
@@ -1134,9 +1154,7 @@ public:
     }
     operated_ = true;
 
-    CacheStageIntent intent =
-        StageIntent(upper_request, lower_response, grants.upper_response,
-                    grants.lower_request);
+    CacheStageIntent intent = StageIntent(upper_request, lower_response, grants.upper_response, grants.lower_request);
 
     if (grants.upper_response) {
       ApplyResponseGrant();
@@ -1149,8 +1167,7 @@ public:
     }
 
     if (!did_fill && current_lookup_.valid) {
-      bool output_space =
-          !current_output_.valid || OutputWillDrain(grants.upper_response);
+      bool output_space = !current_output_.valid || OutputWillDrain(grants.upper_response);
 
       int granted_writeback = -1;
       if (grants.lower_request) {

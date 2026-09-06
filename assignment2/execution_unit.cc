@@ -107,7 +107,8 @@ void ExecutionPipeline::Operate(std::uint64_t current_boundary, const std::optio
 
   // Update Initiation Interval tracking
   if (dispatch.has_value()) {
-    impl_->next_legal_next = current_boundary + impl_->config.initiation_interval;
+    // next_legal = dispatch_boundary + II  (spec §5.1)
+    impl_->next_legal_next = dispatch->dispatch_boundary + impl_->config.initiation_interval;
   } else {
     impl_->next_legal_next = impl_->next_legal_current;
   }
@@ -126,7 +127,8 @@ void ExecutionPipeline::Commit() {
 
   // Reset Operated Flag for the Next Cycle
   impl_->operated = false;
-  impl_->begun = true;
+  // Reset flags for the next cycle
+  impl_->begun = false;
 }
 
 ExecutionSnapshot ExecutionPipeline::Snapshot() const {
