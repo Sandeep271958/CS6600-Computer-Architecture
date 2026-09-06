@@ -527,27 +527,84 @@ public:
     return best ? *best : ResponseChoice{};
   }
 
-  // TODO(A2-CACHE-06): true iff request's range overlaps any
-  // non-ACK_READY (i.e. UNSENT or IN_FLIGHT) writeback entry.
   bool
   ConflictsWithLowerIncompleteWriteback(const CacheRequest &request) const {
-    (void)request;
-    throw std::runtime_error(
-        "CacheController::ConflictsWithLowerIncompleteWriteback: "
-        "TODO(A2-CACHE-06)");
+    for (const auto &wb : current_writebacks_) {
+      if (wb.valid && wb.state != OwnerState::kAckReady) {
+        if (RangesOverlap(request.address, request.size, wb.address, wb.size)) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
-  // TODO(A2-CACHE-06/11): select the oldest eligible UNSENT demand MSHR
-  // (excluding any that overlap an incomplete writeback) and the oldest
-  // eligible UNSENT writeback, sorted by (arrival_order, lower id). A
-  // demand wins unless the writeback buffer has no free entry or the
-  // oldest eligible writeback has already been bypassed by eight demand
-  // grants, in which case that writeback must be selected instead. Must
-  // not mutate state or allocate an id.
-  // Existing helpers: ConflictsWithLowerIncompleteWriteback, FindFreeWriteback.
   RequestChoice SelectLowerRequest() const {
-    throw std::runtime_error(
-        "CacheController::SelectLowerRequest: TODO(A2-CACHE-06)");
+    // Find the oldest eligible UNSENT demand MSHR (not conflicting with
+    // an incomplete writeback).
+    std::optional<std::size_t> best_demand_idx;
+    for (std::size_t i = 0; i < current_mshrs_.size(); ++i) {
+      const auto &mshr = current_mshrs_[i];
+      if (!mshr.valid || mshr.state != OwnerState::kUnsent)
+        continue;
+      if (ConflictsWithLowerIncompleteWriteback(mshr.lower_request))
+        continue;
+      if (!best_demand_idx) {
+        best_demand_idx = i;
+      } else {
+        const auto &best = current_mshrs_[*best_demand_idx];
+        if (std::tie(mshr.arrival_order, mshr.lower_request.id) <
+            std::tie(best.arrival_order, best.lower_request.id)) {
+          best_demand_idx = i;
+        }
+      }
+    }
+
+    // Find the oldest eligible UNSENT writeback.
+    std::optional<std::size_t> best_wb_idx;
+    for (std::size_t i = 0; i < current_writebacks_.size(); ++i) {
+      const auto &wb = current_writebacks_[i];
+      if (!wb.valid || wb.state != OwnerState::kUnsent)
+        continue;
+      if (!best_wb_idx) {
+        best_wb_idx = i;
+      } else {
+        const auto &best = current_writebacks_[*best_wb_idx];
+        if (std::tie(wb.arrival_order, wb.lower_request.id) <
+            std::tie(best.arrival_order, best.lower_request.id)) {
+          best_wb_idx = i;
+        }
+      }
+    }
+
+    RequestChoice result;
+    result.oldest_eligible_writeback = best_wb_idx;
+
+    // Determine if a writeback must be forced instead of a demand.
+    bool force_writeback = false;
+    if (best_demand_idx && best_wb_idx) {
+      const auto &wb = current_writebacks_[*best_wb_idx];
+      bool no_free_wb = (FindFreeWriteback() < 0);
+      bool wb_starved = (wb.demand_bypasses >= 8);
+      force_writeback = no_free_wb || wb_starved;
+    }
+
+    if (best_wb_idx && (!best_demand_idx || force_writeback)) {
+      const auto &wb = current_writebacks_[*best_wb_idx];
+      result.owner = RequestOwner::kWriteback;
+      result.entry = *best_wb_idx;
+      result.request = wb.lower_request;
+      result.arrival_order = wb.arrival_order;
+      result.demand_blocked_by_writeback = false;
+    } else if (best_demand_idx) {
+      const auto &mshr = current_mshrs_[*best_demand_idx];
+      result.owner = RequestOwner::kMshr;
+      result.entry = *best_demand_idx;
+      result.request = mshr.lower_request;
+      result.arrival_order = mshr.arrival_order;
+      result.demand_blocked_by_writeback = false;
+    }
+    return result;
   }
 
   std::optional<CacheResponse> ResponseIntent() const {
@@ -558,12 +615,12 @@ public:
     return std::nullopt;
   }
 
-  // TODO(A2-CACHE-06): available (already implemented, call from here):
-  // SelectLowerRequest() (above) does the candidate selection; this
-  // method just extracts its request if any.
   std::optional<CacheRequest> LowerRequestIntent() const {
-    throw std::runtime_error(
-        "CacheController::LowerRequestIntent: TODO(A2-CACHE-06)");
+    RequestChoice choice = SelectLowerRequest();
+    if (choice.owner != RequestOwner::kNone) {
+      return choice.request;
+    }
+    return std::nullopt;
   }
 
   // TODO(A2-CACHE-12): mark the candidate ResponseIntent() offered as sent;
