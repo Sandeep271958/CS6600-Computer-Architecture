@@ -691,11 +691,34 @@ public:
     return std::nullopt;
   }
 
-  // TODO(A2-CACHE-12): mark the candidate ResponseIntent() offered as sent;
+  // mark the candidate ResponseIntent() offered as sent;
   // free an MSHR (unpinning its way) or writeback entry once every one of
   // its waiters has been sent.
   // Existing helpers: SelectResponse, ResponseIntent.
-  void ApplyResponseGrant() { throw std::runtime_error("CacheController::ApplyResponseGrant: TODO(A2-CACHE-12)"); }
+  void ApplyResponseGrant() {
+    ResponseChoice choice = SelectResponse();
+    if (choice.owner == ResponseOwner::kNone) {
+      throw std::runtime_error("ApplyResponseGrant called with no response");
+    }
+
+    if (choice.owner == ResponseOwner::kOutput) {
+      next_output_.valid = false;
+    } else if (choice.owner == ResponseOwner::kMshr) {
+      MshrEntry &mshr = next_mshrs_[choice.entry];
+
+      bool all_sent = true;
+
+      for (const auto &w : wb.waiters) {
+        if (!w.response_sent) {
+          all_sent = false;
+          break;
+        }
+      }
+      if (all_sent) {
+        wb.valid = false;
+      }
+    }
+  }
 
   void ValidateEcho(const CacheResponse &response, const CacheRequest &request, ResponseType expected_type) const {
     if (response.id != request.id || response.origin_id != request.origin_id || response.sequence != request.sequence ||
@@ -886,24 +909,69 @@ public:
     throw std::runtime_error("CacheController::ApplyWritebackForward: TODO(A2-CACHE-10)");
   }
 
-  // TODO(A2-CACHE-13): increment exactly the one stats counter
+  // increment exactly the one stats counter
   // corresponding to `stall` (kNone/kOutput count nothing). See SPEC.md's
   // stall-precedence chain for which counter fires when several reasons
   // could apply.
   void CountLookupStall(LookupStall stall) {
-    (void)stall;
-    throw std::runtime_error("CacheController::CountLookupStall: TODO(A2-CACHE-13)");
+
+    switch (stall) {
+    case LookupStall ::kNone:
+      break;
+
+    case LookupStall::kOutput:
+      CheckedIncrement(&next_stats_.output_queue_stalls, "output_queue_stalls");
+      break;
+    case LookupStall::kMshrWaiterFull:
+      CheckedIncrement(&next_stats_.mshr_waiter_full_stalls,
+                       "mshr_waiter_full_stalls");
+      break;
+    case LookupStall::kMshrFull:
+      CheckedIncrement(&next_stats_.mshr_full_stalls, "mshr_full_stalls");
+      break;
+    case LookupStall::kReservedWay:
+      CheckedIncrement(&next_stats_.reserved_way_stalls, "reserved_way_stalls");
+      break;
+    case LookupStall::kWritebackOrder:
+      CheckedIncrement(&next_stats_.writeback_order_stalls,
+                       "writeback_order_stalls");
+      break;
+    case LookupStall::kWritebackWaiterFull:
+      CheckedIncrement(&next_stats_.writeback_waiter_full_stalls,
+                       "writeback_waiter_full_stalls");
+      break;
+    case LookupStall::kWritebackFull:
+      CheckedIncrement(&next_stats_.writeback_full_stalls,
+                       "writeback_full_stalls");
+      break;
+    }
   }
 
-  // TODO(A2-CACHE-12): transition the granted MSHR/writeback UNSENT ->
+  // transition the granted MSHR/writeback UNSENT ->
   // IN_FLIGHT. Granting a demand bumps the oldest eligible writeback's
   // demand_bypasses (capped at 8); granting a writeback resets
   // demand_bypasses to 0 and counts writebacks_sent.
   void ApplyLowerRequestGrant() {
-    throw std::runtime_error("CacheController::ApplyLowerRequestGrant: TODO(A2-CACHE-12)");
+    RequestChoice choice = SelectLowerRequest();
+
+    if (choice.owner == RequestOwner::kNone) {
+      throw std::runtime_error("ApplyLowerRequestGrant called with no request");
+    }
+    if (choice.owner == RequestOwner::kMshr) {
+      next_mshrs_[choice.entry].state = OwnerState::kInFlight;
+      std::size_t wb_idx = choice.oldest_eligible_writeback.value();
+      if (next_writebacks_[wb_idx].demand_bypasses < 8) {
+        next_writebacks_[wb_idx].demand_bypasses++;
+      }
+
+    } else if (choice.owner == RequestOwner::kWriteback) {
+      next_writebacks_[choice.entry].state = OwnerState::kInFlight;
+      next_writebacks_[choice.entry].demand_bypasses = 0;
+      CheckedIncrement(&next_stats_, "writebacks_sent");
+    }
   }
 
-  // TODO(A2-CACHE-12): the single mutating call per cycle. Apply only the
+  // the single mutating call per cycle. Apply only the
   // transfers `grants` authorizes, computed from ONE consistent snapshot of
   // current_* state: upper-response removal (ApplyResponseGrant), owned
   // fill/writeback-ack installation (ApplyLowerResponse), at most one
@@ -921,13 +989,69 @@ public:
   void Operate(std::uint64_t current_cycle, const CacheRequest *upper_request, const CacheResponse *lower_response,
                const CacheOperateGrants &grants) {
     (void)current_cycle;
-    (void)upper_request;
-    (void)lower_response;
-    (void)grants;
     if (!begun_ || operated_) {
       throw std::runtime_error("cache Operate lifecycle violation");
     }
-    throw std::runtime_error("CacheController::Operate: TODO(A2-CACHE-12)");
+    operated_ = true;
+
+    CacheStageIntent intent =
+        StageIntent(upper_request, lower_response, grants.upper_response,
+                    grants.lower_request);
+
+    if (grants.upper_response) {
+      ApplyResponseGrant();
+    }
+
+    bool did_fill = false;
+    if (intent.accept_lower_response) {
+      ApplyLowerResponse(*lower_response);
+      did_fill = true;
+    }
+
+    if (!did_fill && current_lookup_.valid) {
+      bool output_space =
+          !current_output_.valid || OutputWillDrain(grants.upper_response);
+
+      int granted_writeback = -1;
+      if (grants.lower_request) {
+        RequestChoice lr_choice = SelectLowerRequest();
+        if (lr_choice.owner == RequestOwner::kWriteback) {
+          granted_writeback = static_cast<int>(lr_choice.entry);
+        }
+      }
+
+      LookupDecision decision = DecideLookup(output_space, granted_writeback);
+
+      if (decision.kind == LookupKind::kHit) {
+        ApplyHit(decision);
+      } else if (decision.kind == LookupKind::kMshrMerge) {
+        ApplyMshrMerge(decision.mshr);
+      } else if (decision.kind == LookupKind::kMshrAllocate) {
+        ApplyMshrAllocation(decision, granted_writeback);
+      } else if (decision.kind == LookupKind::kWritebackForward) {
+        ApplyWritebackForward(granted_writeback);
+      } else if (decision.kind == LookupKind::kHold) {
+        CountLookupStall(decision.stall);
+      }
+    }
+
+    if (intent.accept_upper_request) {
+      if (current_index_.valid) {
+        next_lookup_ = current_index_;
+        next_index_.valid = false;
+      }
+
+      if (grants.upper_request && upper_request) {
+        next_index_.valid = true;
+        next_index_.arrival_order = AllocateArrival();
+        next_index_.request = *upper_request;
+        next_index_.address = MapAddress(upper_request->address);
+      }
+    }
+
+    if (grants.lower_request) {
+      ApplyLowerRequestGrant();
+    }
   }
 
   void Commit() {
