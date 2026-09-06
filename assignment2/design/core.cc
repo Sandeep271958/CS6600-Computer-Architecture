@@ -222,16 +222,19 @@ void Core::Decode() {
     // 4. Unit availability
     // 5. Completion reservation (fixed-result boundary slot)
 
-    if (!machine_->CompletionQueueHasCapacity()) {
+      if (!machine_->CompletionQueueHasCapacity()) {
+        machine_->RecordCpuStall(CpuStallReason::kCompletionQueueFull);
       snapshot.action = "STALL";
       next_fetch_stopped_ = true;
     } else if (hazard_result == HazardResult::kRaw) {
+        machine_->RecordCpuStall(CpuStallReason::kOutstandingRaw);
       snapshot.action = "STALL";
       next_fetch_stopped_ = true;
     } else if (decode_result.writes_register &&
                machine_->HasOlderDestination(if_id_.fetched.sequence,
                                              if_id_.fetched.instruction.rd)) {
       // WAW: younger write cannot overtake older write to same destination
+        machine_->RecordCpuStall(CpuStallReason::kOutstandingWaw);
       snapshot.action = "STALL";
       next_fetch_stopped_ = true;
     } else {
@@ -242,6 +245,7 @@ void Core::Decode() {
               current_boundary_,
               consume_output_[static_cast<std::size_t>(decode_result.unit)])) {
         // Unit availability
+          machine_->RecordCpuStall(CpuStallReason::kExecutionUnitBusy);
         snapshot.action = "STALL";
         next_fetch_stopped_ = true;
       } else {
@@ -260,7 +264,9 @@ void Core::Decode() {
         }
 
         if (!slot_ok) {
-          snapshot.action = "STALL";
+                machine_->RecordCpuStall(CpuStallReason::kExecutionCompletionSlot);
+                snapshot.action = "STALL";
+                next_fetch_stopped_ = true;
           next_fetch_stopped_ = true;
         } else {
           bool allocated = machine_->TryAllocateCompletion(
@@ -268,7 +274,9 @@ void Core::Decode() {
               decode_result.writes_register, result_boundary);
 
           if (!allocated) {
+            machine_->RecordCpuStall(CpuStallReason::kExecutionCompletionSlot);
             snapshot.action = "STALL";
+            next_fetch_stopped_ = true;
             next_fetch_stopped_ = true;
           } else {
             snapshot.action = "DISPATCH";
