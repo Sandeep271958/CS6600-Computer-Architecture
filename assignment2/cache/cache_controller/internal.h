@@ -360,17 +360,29 @@ public:
     return SelectResponse().owner == ResponseOwner::kOutput;
   }
 
-  // TODO(A2-CACHE-07/08/10): the parallel LOOKUP decision -- hit, MSHR
-  // merge/allocate, writeback-forward, or hold with the specific stall
-  // reason, in the priority SPEC.md/ABI.md define. Must not mutate state.
-  // Existing helpers: FindHit, FindMshrByBlock, FindFreeMshr, PeekVictim,
-  // FindFreeWriteback, PlanWriteback.
   LookupDecision DecideLookup(bool output_space,
                               int granted_writeback = -1) const {
-    (void)output_space;
     (void)granted_writeback;
+    LookupDecision decision;
+    if (!current_lookup_.valid) {
+      decision.kind = LookupKind::kEmpty;
+      return decision;
+    }
+
+    int hit = FindHit(current_lookup_.address);
+    if (hit >= 0) {
+      if (!output_space) {
+        decision.kind = LookupKind::kHold;
+        decision.stall = LookupStall::kOutput;
+        return decision;
+      }
+      decision.kind = LookupKind::kHit;
+      decision.hit_way = hit;
+      return decision;
+    }
+
     throw std::runtime_error(
-        "CacheController::DecideLookup: TODO(A2-CACHE-07)");
+        "CacheController::DecideLookup: TODO(A2-CACHE-08/10)");
   }
 
   CacheStageIntent StageIntent(const CacheRequest *upper_request,
@@ -453,14 +465,27 @@ public:
     return next_arrival_++;
   }
 
-  // TODO(A2-CACHE-07): construct the response for a committed hit
-  // (kReadData with the read bytes, kWriteAck, or kWritebackAck).
   CacheResponse ResponseForHit(const PipelineEntry &pipeline,
                                const CacheLine &line) const {
-    (void)pipeline;
-    (void)line;
-    throw std::runtime_error(
-        "CacheController::ResponseForHit: TODO(A2-CACHE-07)");
+    CacheResponse response;
+    response.id = pipeline.request.id;
+    response.origin_id = pipeline.request.origin_id;
+    response.sequence = pipeline.request.sequence;
+    response.generation = pipeline.request.generation;
+    response.address = pipeline.request.address;
+    response.size = pipeline.request.size;
+
+    if (pipeline.request.type == RequestType::kRead) {
+      response.type = ResponseType::kReadData;
+      response.data =
+          ReadBytes(line.data, pipeline.address.block, pipeline.request.address,
+                    pipeline.request.size);
+    } else if (pipeline.request.type == RequestType::kWrite) {
+      response.type = ResponseType::kWriteAck;
+    } else if (pipeline.request.type == RequestType::kWriteback) {
+      response.type = ResponseType::kWritebackAck;
+    }
+    return response;
   }
 
   ResponseChoice SelectResponse() const {
@@ -713,14 +738,32 @@ public:
         "CacheController::InsertWriteback: TODO(A2-CACHE-11)");
   }
 
-  // TODO(A2-CACHE-07): apply a committed hit -- write store/writeback bytes
-  // at the request's offset, mark dirty, build the response (read the
-  // pre-write line for a load, the post-write line otherwise), call
-  // replacement_->OnHit, and update hits/writeback_hits exactly once.
-  // Existing helpers: ResponseForHit.
   void ApplyHit(const LookupDecision &decision) {
-    (void)decision;
-    throw std::runtime_error("CacheController::ApplyHit: TODO(A2-CACHE-07)");
+    const auto &pipeline = current_lookup_;
+    CacheLine &line = next_lines_[pipeline.address.set][decision.hit_way];
+
+    if (pipeline.request.type == RequestType::kRead) {
+      next_output_.valid = true;
+      next_output_.arrival_order = AllocateArrival();
+      next_output_.response = ResponseForHit(pipeline, line);
+    } else {
+      WriteBytes(&line.data, pipeline.address.block, pipeline.request.address,
+                 pipeline.request.data);
+      line.dirty = true;
+      next_output_.valid = true;
+      next_output_.arrival_order = AllocateArrival();
+      next_output_.response = ResponseForHit(pipeline, line);
+    }
+
+    replacement_->OnHit(pipeline.address.set, decision.hit_way);
+
+    if (pipeline.request.type == RequestType::kWriteback) {
+      CheckedIncrement(&next_stats_.writeback_hits, "writeback_hits");
+    } else {
+      CheckedIncrement(&next_stats_.hits, "hits");
+    }
+
+    next_lookup_.valid = false;
   }
 
   // TODO(A2-CACHE-08): append a waiter to the existing MSHR; update
