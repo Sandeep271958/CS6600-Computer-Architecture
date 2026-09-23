@@ -3,21 +3,16 @@
 #include <limits>
 #include <stdexcept>
 namespace pipesim::design_internal {
-Core::Core(Machine *machine,
-           const std::array<ExecutionPipeline *, 7> &pipelines,
-           MainControl *main_control, HazardControl *hazard_control,
-           BranchPredictionSystem *branch_prediction,
+Core::Core(Machine *machine, const std::array<ExecutionPipeline *, 7> &pipelines, MainControl *main_control,
+           HazardControl *hazard_control, BranchPredictionSystem *branch_prediction,
            SpeculationController *speculation_control)
-    : machine_(machine), pipelines_(pipelines), main_control_(main_control),
-      hazard_control_(hazard_control), branch_prediction_(branch_prediction),
-      speculation_control_(speculation_control) {
-  if (machine_ == nullptr || main_control_ == nullptr ||
-      hazard_control_ == nullptr || branch_prediction_ == nullptr ||
+    : machine_(machine), pipelines_(pipelines), main_control_(main_control), hazard_control_(hazard_control),
+      branch_prediction_(branch_prediction), speculation_control_(speculation_control) {
+  if (machine_ == nullptr || main_control_ == nullptr || hazard_control_ == nullptr || branch_prediction_ == nullptr ||
       speculation_control_ == nullptr)
     throw std::runtime_error("CPU core received a null component");
   for (std::size_t i = 0; i < pipelines_.size(); ++i)
-    if (pipelines_[i] == nullptr ||
-        pipelines_[i]->kind() != static_cast<ExecutionUnitKind>(i))
+    if (pipelines_[i] == nullptr || pipelines_[i]->kind() != static_cast<ExecutionUnitKind>(i))
       throw std::runtime_error("CPU core execution-unit registration mismatch");
 }
 
@@ -90,15 +85,13 @@ std::string Core::RegisterSnapshot(RegisterKind kind) const {
   std::ostringstream output;
   switch (kind) {
   case RegisterKind::kPc:
-    output << "pc=0x" << std::hex << pc_ << std::dec
-           << " stopped=" << (fetch_stopped_ ? 1 : 0);
+    output << "pc=0x" << std::hex << pc_ << std::dec << " stopped=" << (fetch_stopped_ ? 1 : 0);
     return output.str();
   case RegisterKind::kIfId:
     if (!if_id_.valid)
       return "EMPTY";
-    output << OpcodeName(if_id_.fetched.instruction.opcode) << "@0x" << std::hex
-           << if_id_.fetched.instruction.pc << std::dec << "#"
-           << if_id_.fetched.sequence;
+    output << OpcodeName(if_id_.fetched.instruction.opcode) << "@0x" << std::hex << if_id_.fetched.instruction.pc
+           << std::dec << "#" << if_id_.fetched.sequence;
     return output.str();
   case RegisterKind::kIdEx:
     return "EXECUTION_PIPELINES";
@@ -110,19 +103,14 @@ std::string Core::RegisterSnapshot(RegisterKind kind) const {
   return "EMPTY";
 }
 
-void Core::ResetStage(StageRole role) {
-  snapshots_[static_cast<std::size_t>(role)] = StageSnapshot();
-}
+void Core::ResetStage(StageRole role) { snapshots_[static_cast<std::size_t>(role)] = StageSnapshot(); }
 
-StageSnapshot Core::Snapshot(StageRole role) const {
-  return snapshots_[static_cast<std::size_t>(role)];
-}
+StageSnapshot Core::Snapshot(StageRole role) const { return snapshots_[static_cast<std::size_t>(role)]; }
 
 void Core::Writeback() {
   BeginCycle();
 
-  StageSnapshot &snapshot =
-      snapshots_[static_cast<std::size_t>(StageRole::kWriteback)];
+  StageSnapshot &snapshot = snapshots_[static_cast<std::size_t>(StageRole::kWriteback)];
   snapshot = StageSnapshot();
   snapshot.action = "EMPTY";
 
@@ -138,15 +126,14 @@ void Core::Writeback() {
 }
 
 void Core::Memory() {
-  StageSnapshot &snapshot =
-      snapshots_[static_cast<std::size_t>(StageRole::kMemory)];
+  StageSnapshot &snapshot = snapshots_[static_cast<std::size_t>(StageRole::kMemory)];
   snapshot = StageSnapshot();
   snapshot.action = "EMPTY";
 
   for (std::size_t index = 0; index < pipelines_.size(); ++index) {
-    const std::optional<ExecutionResult> output =
-        pipelines_[index]->OutputIntent();
-    if (!output) continue;
+    const std::optional<ExecutionResult> output = pipelines_[index]->OutputIntent();
+    if (!output)
+      continue;
 
     snapshot = SnapshotFor(output->instruction);
     if (static_cast<ExecutionUnitKind>(index) == ExecutionUnitKind::kAgu) {
@@ -156,17 +143,14 @@ void Core::Memory() {
       } else if (!machine_->DataRequestLinkCanAccept()) {
         machine_->RecordCpuStall(CpuStallReason::kDcacheInput);
         snapshot.action = "STALL";
-      } else if (machine_->TryIssueData(output->sequence, output->address,
-                                        output->memory_write,
-                                        output->store_value)) {
+      } else if (machine_->TryIssueData(output->sequence, output->address, output->memory_write, output->store_value)) {
         consume_output_[index] = true;
         snapshot.action = "HANDOFF";
       } else {
         snapshot.action = "STALL";
       }
     } else {
-      machine_->CompleteNonMemory(output->sequence, output->value,
-                                  output->halt);
+      machine_->CompleteNonMemory(output->sequence, output->value, output->halt);
       consume_output_[index] = true;
       snapshot.action = "COMPLETE";
       if (static_cast<ExecutionUnitKind>(index) == ExecutionUnitKind::kControl)
@@ -176,13 +160,13 @@ void Core::Memory() {
 }
 
 void Core::Execute() {
-  StageSnapshot &snapshot =
-      snapshots_[static_cast<std::size_t>(StageRole::kExecute)];
+  StageSnapshot &snapshot = snapshots_[static_cast<std::size_t>(StageRole::kExecute)];
   snapshot = StageSnapshot();
   snapshot.action = "EMPTY";
 
   next_ex_mem_ = ExecutionLatch();
-  if (!id_ex_.valid) return;
+  if (!id_ex_.valid)
+    return;
 
   DecodeResult dec = main_control_->Decode(id_ex_.instruction);
   next_ex_mem_.valid = true;
@@ -203,8 +187,7 @@ void Core::Execute() {
 }
 
 void Core::Decode() {
-  StageSnapshot &snapshot =
-      snapshots_[static_cast<std::size_t>(StageRole::kDecode)];
+  StageSnapshot &snapshot = snapshots_[static_cast<std::size_t>(StageRole::kDecode)];
   snapshot = StageSnapshot();
   snapshot.action = "EMPTY";
 
@@ -214,14 +197,12 @@ void Core::Decode() {
   if (if_id_.valid) {
     snapshot = SnapshotFor(if_id_.fetched.instruction);
 
-    DecodeResult decode_result =
-        main_control_->Decode(if_id_.fetched.instruction);
+    DecodeResult decode_result = main_control_->Decode(if_id_.fetched.instruction);
 
     target_unit = decode_result.unit;
 
-    HazardResult hazard_result = hazard_control_->Check(
-        machine_, if_id_.fetched.sequence, if_id_.fetched.instruction,
-        decode_result.writes_register);
+    HazardResult hazard_result = hazard_control_->Check(machine_, if_id_.fetched.sequence, if_id_.fetched.instruction,
+                                                        decode_result.writes_register);
 
     if (!machine_->CompletionQueueHasCapacity()) {
       machine_->RecordCpuStall(CpuStallReason::kCompletionQueueFull);
@@ -232,18 +213,15 @@ void Core::Decode() {
       snapshot.action = "STALL";
       next_fetch_stopped_ = true;
     } else if (decode_result.writes_register &&
-               machine_->HasOlderDestination(if_id_.fetched.sequence,
-                                             if_id_.fetched.instruction.rd)) {
+               machine_->HasOlderDestination(if_id_.fetched.sequence, if_id_.fetched.instruction.rd)) {
       machine_->RecordCpuStall(CpuStallReason::kOutstandingWaw);
       snapshot.action = "STALL";
       next_fetch_stopped_ = true;
     } else {
-      ExecutionPipeline *target_pipeline =
-          pipelines_[static_cast<std::size_t>(decode_result.unit)];
+      ExecutionPipeline *target_pipeline = pipelines_[static_cast<std::size_t>(decode_result.unit)];
 
-      if (!target_pipeline->CanAccept(
-              current_boundary_,
-              consume_output_[static_cast<std::size_t>(decode_result.unit)])) {
+      if (!target_pipeline->CanAccept(current_boundary_,
+                                      consume_output_[static_cast<std::size_t>(decode_result.unit)])) {
         machine_->RecordCpuStall(CpuStallReason::kExecutionUnitBusy);
         snapshot.action = "STALL";
         next_fetch_stopped_ = true;
@@ -251,8 +229,7 @@ void Core::Decode() {
         std::optional<std::uint64_t> result_boundary = std::nullopt;
         bool slot_ok = true;
         if (decode_result.unit != pipesim::ExecutionUnitKind::kAgu) {
-          std::uint64_t rb = current_boundary_ +
-                             static_cast<std::uint64_t>(target_pipeline->config().latency) + 2;
+          std::uint64_t rb = current_boundary_ + static_cast<std::uint64_t>(target_pipeline->config().latency) + 2;
           result_boundary = rb;
           if (!machine_->NormalCompletionSlotAvailable(rb)) {
             slot_ok = false;
@@ -264,9 +241,8 @@ void Core::Decode() {
           snapshot.action = "STALL";
           next_fetch_stopped_ = true;
         } else {
-          bool allocated = machine_->TryAllocateCompletion(
-              if_id_.fetched.sequence, if_id_.fetched.instruction,
-              decode_result.writes_register, result_boundary);
+          bool allocated = machine_->TryAllocateCompletion(if_id_.fetched.sequence, if_id_.fetched.instruction,
+                                                           decode_result.writes_register, result_boundary);
 
           if (!allocated) {
             machine_->RecordCpuStall(CpuStallReason::kExecutionCompletionSlot);
@@ -287,17 +263,13 @@ void Core::Decode() {
               auto opcode = if_id_.fetched.instruction.opcode;
 
               if (opcode == pipesim::Opcode::kBeq) {
-                std::uint32_t first =
-                    machine_->ReadRegister(if_id_.fetched.instruction.rs1);
-                std::uint32_t second =
-                    machine_->ReadRegister(if_id_.fetched.instruction.rs2);
+                std::uint32_t first = machine_->ReadRegister(if_id_.fetched.instruction.rs1);
+                std::uint32_t second = machine_->ReadRegister(if_id_.fetched.instruction.rs2);
                 taken = (first == second);
                 target = if_id_.fetched.instruction.immediate;
               } else if (opcode == pipesim::Opcode::kBne) {
-                std::uint32_t first =
-                    machine_->ReadRegister(if_id_.fetched.instruction.rs1);
-                std::uint32_t second =
-                    machine_->ReadRegister(if_id_.fetched.instruction.rs2);
+                std::uint32_t first = machine_->ReadRegister(if_id_.fetched.instruction.rs1);
+                std::uint32_t second = machine_->ReadRegister(if_id_.fetched.instruction.rs2);
                 taken = (first != second);
                 target = if_id_.fetched.instruction.immediate;
               } else if (opcode == pipesim::Opcode::kJ) {
@@ -307,7 +279,8 @@ void Core::Decode() {
 
               if (taken || opcode == Opcode::kHalt) {
                 machine_->InvalidateFetchesAfter(if_id_.fetched.sequence);
-                if (taken) next_pc_ = target;
+                if (taken)
+                  next_pc_ = target;
               }
             }
 
@@ -319,7 +292,7 @@ void Core::Decode() {
             op.predictions = if_id_.fetched.predictions;
             op.lhs = machine_->ReadRegister(if_id_.fetched.instruction.rs1);
             op.rhs = (if_id_.fetched.instruction.opcode == pipesim::Opcode::kAddi ||
-                      if_id_.fetched.instruction.opcode == pipesim::Opcode::kLw  ||
+                      if_id_.fetched.instruction.opcode == pipesim::Opcode::kLw ||
                       if_id_.fetched.instruction.opcode == pipesim::Opcode::kSw)
                          ? static_cast<std::uint32_t>(if_id_.fetched.instruction.immediate)
                          : machine_->ReadRegister(if_id_.fetched.instruction.rs2);
@@ -332,23 +305,18 @@ void Core::Decode() {
   }
 
   for (std::size_t i = 0; i < pipelines_.size(); ++i) {
-    bool is_target =
-        if_id_consumed_ && (static_cast<std::size_t>(target_unit) == i);
-    pipelines_[i]->Operate(current_boundary_,
-                           is_target ? dispatch_op : std::nullopt,
-                           consume_output_[i]);
+    bool is_target = if_id_consumed_ && (static_cast<std::size_t>(target_unit) == i);
+    pipelines_[i]->Operate(current_boundary_, is_target ? dispatch_op : std::nullopt, consume_output_[i]);
   }
   pipelines_operated_ = true;
 }
 
 void Core::Fetch() {
-  StageSnapshot &snapshot =
-      snapshots_[static_cast<std::size_t>(StageRole::kFetch)];
+  StageSnapshot &snapshot = snapshots_[static_cast<std::size_t>(StageRole::kFetch)];
   snapshot = StageSnapshot();
   snapshot.pc = pc_;
 
-  if (!fetch_stopped_ && !control_recognized_this_cycle_ &&
-      (!if_id_.valid || if_id_consumed_)) {
+  if (!fetch_stopped_ && !control_recognized_this_cycle_ && (!if_id_.valid || if_id_consumed_)) {
     FetchedInstruction fetched;
     if (machine_->PeekFetched(&fetched)) {
       next_if_id_.valid = true;
@@ -370,10 +338,23 @@ void Core::Fetch() {
       if (snapshot.action == "EMPTY")
         snapshot.action = "STALL";
     } else {
-      if (machine_->TryIssueFetch(pc_)) {
-        next_pc_ = pc_ + 4;
+      if (!speculation_control_->CanFetch()) {
+        machine_->RecordCpuStall(CpuStallReason::kControlDisabled);
+        if (snapshot.action == "EMPTY")
+          snapshot.action = "STALL";
+      } else {
+        BranchPredictionSet predictions = branch_prediction_->Predict(pc_);
+        if (!machine_->TryIssuePredictedFetch(pc_, predictions, current_boundary_))
+          return;
+
+        next_pc_ = predictions.next_pc;
+
         if (snapshot.action == "EMPTY")
           snapshot.action = "FETCH";
+
+        const auto depth = speculation_control_->CheckpointCount();
+        if (depth != 0)
+          branch_prediction_->RecordSpeculativeFetch(depth);
       }
     }
   }
