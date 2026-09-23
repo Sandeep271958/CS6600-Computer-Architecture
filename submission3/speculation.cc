@@ -33,8 +33,9 @@ bool SpeculationController::CanDispatch(std::uint64_t sequence, const Instructio
 }
 
 void SpeculationController::AddCheckpoint(const BranchCheckpoint &checkpoint) {
-  (void)checkpoint;
-  throw std::runtime_error("SpeculationController::AddCheckpoint: TODO(PA3-FRAMEWORK-03)");
+  // Ensures that dispatch is In-Order
+  assert(impl_->checkpoints.empty() || impl_->checkpoints.back().sequence < checkpoint.sequence);
+  impl_->checkpoints.push_back(checkpoint);
 }
 
 bool SpeculationController::IsSpeculative(std::uint64_t sequence) const {
