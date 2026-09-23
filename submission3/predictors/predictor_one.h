@@ -44,6 +44,9 @@ private:
   // History registers
   std::uint64_t ghr_ = 0;
   std::uint32_t path_history_ = 0;
+
+  // Helpers
+  std::uint32_t GetScIndex(size_t table_idx, std::uint32_t pc) const;
 };
 
 } // namespace pipesim
