@@ -5,3 +5,5 @@ CS6600_PA?.md
 *.exe
 *.tex
 *.o
+*.pdf
+!./report.pdf
