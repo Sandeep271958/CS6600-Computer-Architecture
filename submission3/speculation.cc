@@ -21,8 +21,9 @@ bool SpeculationController::CanFetch() const { return impl_->checkpoints.size() 
 bool SpeculationController::CanDispatch(std::uint64_t sequence, const Instruction &instruction) const {
 
   // Younger Loads, Stores, Branches, Jumps, Halts are not dispatched if older unresolved branches exist
-  bool is_restricted = (instruction.opcode == kLw || instruction.opcode == kSw || instruction.opcode == kBeq ||
-                        instruction.opcode == kBne || instruction.opcode == kJ || instruction.opcode == kHalt);
+  bool is_restricted = (instruction.opcode == Opcode::kLw || instruction.opcode == Opcode::kSw ||
+                        instruction.opcode == Opcode::kBeq || instruction.opcode == Opcode::kBne ||
+                        instruction.opcode == Opcode::kJ || instruction.opcode == Opcode::kHalt);
 
   if (!is_restricted)
     return true;
@@ -66,9 +67,10 @@ std::uint64_t SpeculationController::SpeculationDepth(std::uint64_t sequence) co
 }
 
 RecoveryDecision SpeculationController::Resolve(const BranchResult &result) {
-  RecoveryDecision decision = {.mispredicted = false,
-                               .branch_sequence = result.sequence,
-                               .correct_next_pc = result.pc + 4};
+  RecoveryDecision decision;
+  decision.mispredicted = false;
+  decision.branch_sequence = result.sequence;
+  decision.correct_next_pc = result.pc + 4;
 
   if (result.taken)
     decision.correct_next_pc = result.target;
