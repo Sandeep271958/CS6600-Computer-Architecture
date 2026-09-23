@@ -4,3 +4,4 @@ CS6600_PA?.md
 .clang-format
 *.exe
 *.tex
+*.o
