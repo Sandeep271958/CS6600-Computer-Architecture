@@ -1,5 +1,7 @@
 #include "speculation/internal.h"
 
+#include <algorithm>
+#include <cassert>
 #include <stdexcept>
 
 namespace pipesim {
@@ -39,13 +41,28 @@ void SpeculationController::AddCheckpoint(const BranchCheckpoint &checkpoint) {
 }
 
 bool SpeculationController::IsSpeculative(std::uint64_t sequence) const {
-  (void)sequence;
-  throw std::runtime_error("SpeculationController::IsSpeculative: TODO(PA3-FRAMEWORK-03)");
+  for (const auto &checkpoint : impl_->checkpoints) {
+    if (checkpoint.sequence < sequence)
+      return true;
+  }
+  return false;
 }
 
 std::uint64_t SpeculationController::SpeculationDepth(std::uint64_t sequence) const {
-  (void)sequence;
-  throw std::runtime_error("SpeculationController::SpeculationDepth: TODO(PA3-FRAMEWORK-03)");
+  // Naive Implementation O(N)
+  uint64_t speculation_depth = 0;
+  for (const auto &checkpoint : impl_->checkpoints) {
+    if (checkpoint.sequence < sequence)
+      ++speculation_depth;
+  }
+  return speculation_depth;
+
+  // Assuming checkpoints is maintained in strictly increasing sequence order.
+  // O(LogN) Implementation
+  // return static_cast<uint64_t>(
+  //     std::lower_bound(impl_->checkpoints.begin(), impl_->checkpoints.end(), sequence,
+  //                      [](const auto &checkpoint, uint64_t seq) { return checkpoint.sequence < seq; }) -
+  //     impl_->checkpoints.begin());
 }
 
 RecoveryDecision SpeculationController::Resolve(const BranchResult &result) {
