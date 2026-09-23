@@ -66,8 +66,23 @@ std::uint64_t SpeculationController::SpeculationDepth(std::uint64_t sequence) co
 }
 
 RecoveryDecision SpeculationController::Resolve(const BranchResult &result) {
-  (void)result;
-  throw std::runtime_error("SpeculationController::Resolve: TODO(PA3-FRAMEWORK-04)");
+  RecoveryDecision decision = {.mispredicted = false,
+                               .branch_sequence = result.sequence,
+                               .correct_next_pc = result.pc + 4};
+
+  if (result.taken)
+    decision.correct_next_pc = result.target;
+
+  for (auto it = impl_->checkpoints.begin(), end = impl_->checkpoints.end(); it != end; ++it) {
+    const auto &checkpoint = *it;
+    if (checkpoint.sequence == result.sequence) {
+      decision.mispredicted = (checkpoint.predicted_next_pc != decision.correct_next_pc);
+      impl_->checkpoints.erase(it);
+      return decision;
+    }
+  }
+
+  throw std::runtime_error("resolved branch has no checkpoint");
 }
 
 void SpeculationController::RemoveYoungerCheckpoints(std::uint64_t sequence) {
