@@ -15,6 +15,7 @@ SpeculationController::~SpeculationController() = default;
 
 void SpeculationController::Reset() {
   impl_->checkpoints.clear();
+  
   throw std::runtime_error("SpeculationController::Reset: TODO(PA3-FRAMEWORK-01)");
 }
 
