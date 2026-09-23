@@ -17,9 +17,19 @@ void SpeculationController::Reset() { impl_->checkpoints.clear(); }
 bool SpeculationController::CanFetch() const { return impl_->checkpoints.size() < impl_->maximum_checkpoints; }
 
 bool SpeculationController::CanDispatch(std::uint64_t sequence, const Instruction &instruction) const {
-  (void)sequence;
-  (void)instruction;
-  throw std::runtime_error("SpeculationController::CanDispatch: TODO(PA3-FRAMEWORK-02)");
+
+  // Younger Loads, Stores, Branches, Jumps, Halts are not dispatched if older unresolved branches exist
+  bool is_restricted = (instruction.opcode == kLw || instruction.opcode == kSw || instruction.opcode == kBeq ||
+                        instruction.opcode == kBne || instruction.opcode == kJ || instruction.opcode == kHalt);
+
+  if (!is_restricted)
+    return true;
+
+  for (const auto &checkpoint : impl_->checkpoints) {
+    if (checkpoint.sequence < sequence)
+      return false;
+  }
+  return true;
 }
 
 void SpeculationController::AddCheckpoint(const BranchCheckpoint &checkpoint) {
