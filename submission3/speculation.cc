@@ -86,8 +86,9 @@ RecoveryDecision SpeculationController::Resolve(const BranchResult &result) {
 }
 
 void SpeculationController::RemoveYoungerCheckpoints(std::uint64_t sequence) {
-  (void)sequence;
-  throw std::runtime_error("SpeculationController::RemoveYoungerCheckpoints: TODO(PA3-FRAMEWORK-05)");
+  auto it = std::find_if(impl_->checkpoints.begin(), impl_->checkpoints.end(),
+                         [sequence](const auto &cp) { return cp.sequence > sequence; });
+  impl_->checkpoints.erase(it, impl_->checkpoints.end());
 }
 
 std::size_t SpeculationController::CheckpointCount() const { return impl_->checkpoints.size(); }
