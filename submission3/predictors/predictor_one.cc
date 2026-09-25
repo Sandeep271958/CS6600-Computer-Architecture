@@ -177,7 +177,7 @@ void PredictorOne::Update(const BranchResult &result, const BranchPrediction &pr
         return val;
       };
 
-      std::uint32_t pc = result.pc;
+      (void)result.pc; // pc unused; suppress warning if needed in future extensions
       for (size_t t = 0; t < sc_tables_.size(); ++t) {
         // Unpack using same kScIdxBits/kScIdxMask from header
         std::uint32_t idx = static_cast<std::uint32_t>((metadata >> (4 + t * kScIdxBits)) & kScIdxMask);

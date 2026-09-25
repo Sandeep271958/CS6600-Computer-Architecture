@@ -316,37 +316,29 @@ void Core::Decode() {
                 next_fetch_stopped_ = false;
 
                 if (target_unit == pipesim::ExecutionUnitKind::kControl) {
-                  control_recognized_this_cycle_ = true;
-                  next_fetch_stopped_ = true;
-
-                  bool taken = false;
-                  std::uint32_t target = 0;
                   auto opcode = if_id_.fetched.instruction.opcode;
 
-                  if (opcode == pipesim::Opcode::kBeq) {
-                    std::uint32_t first = machine_->ReadRegister(if_id_.fetched.instruction.rs1);
-                    std::uint32_t second = machine_->ReadRegister(if_id_.fetched.instruction.rs2);
-                    taken = (first == second);
-                    target = if_id_.fetched.instruction.immediate;
-                  } else if (opcode == pipesim::Opcode::kBne) {
-                    std::uint32_t first = machine_->ReadRegister(if_id_.fetched.instruction.rs1);
-                    std::uint32_t second = machine_->ReadRegister(if_id_.fetched.instruction.rs2);
-                    taken = (first != second);
-                    target = if_id_.fetched.instruction.immediate;
-                  } else if (opcode == pipesim::Opcode::kJ) {
-                    taken = true;
-                    target = if_id_.fetched.instruction.immediate;
-                  }
-
-                  if (taken || opcode == Opcode::kHalt) {
+                  if (opcode == Opcode::kHalt) {
+                    // kHalt terminates the program: stop all further fetching this
+                    // cycle and invalidate any instructions already in the fetch queue
+                    // that are younger than halt (they must never execute).
+                    control_recognized_this_cycle_ = true;
+                    next_fetch_stopped_ = true;
                     machine_->InvalidateFetchesAfter(if_id_.fetched.sequence);
-                    if (taken)
-                      next_pc_ = target;
-                  }
-
-                  // Create a branch checkpoint for kBeq, kBne, kJ (not kHalt).
-                  // This checkpoint is the recovery point if this branch mispredicts.
-                  if (opcode != Opcode::kHalt) {
+                  } else {
+                    // kBeq / kBne / kJ — speculative branch.
+                    // DO NOT stop fetch here: CanFetch() in Fetch gates further
+                    // speculation based on checkpoint capacity; stopping fetch here
+                    // would defeat the entire speculative-execution design.
+                    // DO NOT read registers or compute taken/target: that is the
+                    // CONTROL execution unit's job. Reading stale register values at
+                    // Decode and overwriting next_pc_ would discard the predictor's
+                    // redirect that was already applied in Fetch this cycle.
+                    // DO NOT call InvalidateFetchesAfter here: the instructions
+                    // fetched on the predicted path are correct-path speculation;
+                    // squashing them here would remove valid work.
+                    //
+                    // Record the checkpoint so Execute can recover on misprediction.
                     BranchCheckpoint cp;
                     cp.sequence = if_id_.fetched.sequence;
                     cp.predicted_next_pc = if_id_.fetched.predictions.next_pc;
