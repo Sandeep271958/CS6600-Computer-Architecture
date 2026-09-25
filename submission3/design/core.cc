@@ -198,7 +198,7 @@ void Core::Execute() {
       next_pc_ = decision.correct_next_pc;
       SquashReport report = machine_->SquashAfter(result.sequence);
 
-      // Sum pipeline squash counts; SquashAfter(seq) removes ops younger than seq.
+      // Sum pipeline squash counts
       std::uint64_t pipeline_operations = 0;
       for (std::size_t i = 0; i < pipelines_.size(); ++i) {
         pipeline_operations += pipelines_[i]->SquashAfter(result.sequence);

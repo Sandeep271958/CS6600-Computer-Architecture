@@ -6,8 +6,7 @@ namespace pipesim {
 
 std::string PredictorOne::Name() const { return "PAPER_ONE"; }
 
-std::uint32_t PredictorOne::GetScIndex(size_t table_idx,
-                                       std::uint32_t pc) const {
+std::uint32_t PredictorOne::GetScIndex(size_t table_idx, std::uint32_t pc) const {
   switch (table_idx) {
   case 0:
     return (pc >> 1) % kScTableSize;
@@ -58,9 +57,7 @@ BranchPrediction PredictorOne::Predict(std::uint32_t pc) {
   int sc_sum = 0;
 
   if (!sc_tables_.empty()) {
-    auto get_centered_val = [](int8_t ctr) {
-      return 2 * static_cast<int>(ctr) + 1;
-    };
+    auto get_centered_val = [](int8_t ctr) { return 2 * static_cast<int>(ctr) + 1; };
 
     for (size_t t = 0; t < sc_tables_.size(); ++t) {
       sc_sum += get_centered_val(sc_tables_[t][GetScIndex(t, pc)]);
@@ -119,8 +116,7 @@ BranchPrediction PredictorOne::Predict(std::uint32_t pc) {
   // header
   for (size_t t = 0; t < kScNumTables; ++t) {
     uint32_t idx = GetScIndex(t, pc);
-    metadata |= (static_cast<std::uint64_t>(idx) & kScIdxMask)
-                << (4 + t * kScIdxBits);
+    metadata |= (static_cast<std::uint64_t>(idx) & kScIdxMask) << (4 + t * kScIdxBits);
   }
   // Pack loop iter snapshot (10 bits) at bit 40
   metadata |= (static_cast<std::uint64_t>(loop_iter_snap) & 0x3FFULL) << 40;
@@ -139,16 +135,22 @@ BranchPrediction PredictorOne::Predict(std::uint32_t pc) {
   return prediction;
 }
 
-void PredictorOne::ObserveInstruction(const Instruction &instruction,
-                                      const BranchPrediction &prediction) {
-  (void)instruction;
-  (void)prediction;
-  throw std::runtime_error(
-      "PredictorOne::ObserveInstruction: TODO(PA3-PREDICTOR-ONE)");
+void PredictorOne::ObserveInstruction(const Instruction &instruction, const BranchPrediction &prediction) {
+  // Just to update metrics and a Sanity Check
+
+  const bool actual_branch = instruction.opcode == Opcode::kBeq || instruction.opcode == Opcode::kBne ||
+                             instruction.opcode == Opcode::kJ;
+
+  if (prediction.branch_found && !actual_branch) {
+    ++metrics_.false_branch_predictions;
+  }
+
+  else if (!prediction.branch_found && actual_branch) {
+    ++metrics_.missed_branches;
+  }
 }
 
-void PredictorOne::Update(const BranchResult &result,
-                          const BranchPrediction &prediction) {
+void PredictorOne::Update(const BranchResult &result, const BranchPrediction &prediction) {
   ++metrics_.updates;
 
   std::uint64_t metadata = prediction.information;
@@ -178,8 +180,7 @@ void PredictorOne::Update(const BranchResult &result,
       std::uint32_t pc = result.pc;
       for (size_t t = 0; t < sc_tables_.size(); ++t) {
         // Unpack using same kScIdxBits/kScIdxMask from header
-        std::uint32_t idx = static_cast<std::uint32_t>(
-            (metadata >> (4 + t * kScIdxBits)) & kScIdxMask);
+        std::uint32_t idx = static_cast<std::uint32_t>((metadata >> (4 + t * kScIdxBits)) & kScIdxMask);
         if (result.taken) {
           sc_tables_[t][idx] = clamp(sc_tables_[t][idx] + 1, -32, 31);
         } else {
@@ -191,8 +192,7 @@ void PredictorOne::Update(const BranchResult &result,
 
   // Step 8 - Loop Predictor Update
   bool loop_hit_saved = (metadata & (1ULL << 2)) != 0;
-  std::uint32_t loop_iter_at_predict =
-      static_cast<std::uint32_t>((metadata >> 40) & 0x3FFULL);
+  std::uint32_t loop_iter_at_predict = static_cast<std::uint32_t>((metadata >> 40) & 0x3FFULL);
 
   std::uint32_t lpc = result.pc;
   std::uint32_t l_idx = GetLoopIndex(lpc);
@@ -282,8 +282,7 @@ void PredictorOne::Update(const BranchResult &result,
 }
 
 std::uint64_t PredictorOne::StorageBits() const {
-  throw std::runtime_error(
-      "PredictorOne::StorageBits: TODO(PA3-PREDICTOR-ONE)");
+  throw std::runtime_error("PredictorOne::StorageBits: TODO(PA3-PREDICTOR-ONE)");
 }
 
 const PredictorMetrics &PredictorOne::Metrics() const { return metrics_; }
