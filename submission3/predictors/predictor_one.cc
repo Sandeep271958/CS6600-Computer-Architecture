@@ -280,7 +280,22 @@ void PredictorOne::Update(const BranchResult &result, const BranchPrediction &pr
 }
 
 std::uint64_t PredictorOne::StorageBits() const {
-  throw std::runtime_error("PredictorOne::StorageBits: TODO(PA3-PREDICTOR-ONE)");
+  constexpr std::uint64_t kScCounterBits = 6;
+  constexpr std::uint64_t kLoopIterBits = 10;
+  constexpr std::uint64_t kLoopTripBits = 10;
+  constexpr std::uint64_t kLoopAgeBits = 3;
+  constexpr std::uint64_t kLoopConfidenceSeenBits = 2;
+
+  const std::uint64_t sc_bits =
+      kScNumTables * kScTableSize * kScCounterBits;
+  const std::uint64_t loop_entry_bits =
+      1 + kLoopTagBits + kLoopIterBits + kLoopTripBits + 1 + kLoopAgeBits +
+      kLoopConfidenceSeenBits;
+  const std::uint64_t loop_bits = kLoopTableSize * loop_entry_bits;
+  const std::uint64_t history_bits =
+      sizeof(ghr_) * 8 + sizeof(path_history_) * 8;
+
+  return sc_bits + loop_bits + history_bits;
 }
 
 const PredictorMetrics &PredictorOne::Metrics() const { return metrics_; }
