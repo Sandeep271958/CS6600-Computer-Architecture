@@ -1,8 +1,16 @@
 #include "predictors/predictor_one.h"
 
+#include <cstdlib>
 #include <stdexcept>
 
 namespace pipesim {
+
+namespace {
+
+constexpr unsigned kScSumMetadataShift = 50;
+constexpr std::uint64_t kScSumMetadataMask = 0x1FFULL;
+
+}
 
 std::string PredictorOne::Name() const { return "PAPER_ONE"; }
 
@@ -64,17 +72,10 @@ BranchPrediction PredictorOne::Predict(std::uint32_t pc) {
     }
   }
 
-  bool sc_override = false;
-  bool final_taken = tage_taken;
-
-  // Override TAGE if SC has strong opposing conviction
-  if (tage_taken && sc_sum < -kScThreshold) {
-    sc_override = true;
-    final_taken = false;
-  } else if (!tage_taken && sc_sum > kScThreshold) {
-    sc_override = true;
-    final_taken = true;
-  }
+  const bool sc_taken = sc_sum > 0;
+  const bool sc_override = std::abs(sc_sum) > kScThreshold &&
+                           sc_taken != tage_taken;
+  const bool tage_or_sc_taken = sc_override ? sc_taken : tage_taken;
 
   // Step 5 - Loop Predictor Lookup
   std::uint32_t loop_idx = GetLoopIndex(pc);
@@ -93,7 +94,7 @@ BranchPrediction PredictorOne::Predict(std::uint32_t pc) {
   }
 
   // Final taken: loop overrides SC/TAGE when confident
-  bool final_taken_with_loop = loop_hit ? loop_pred : final_taken;
+  const bool final_taken_with_loop = loop_hit ? loop_pred : tage_or_sc_taken;
 
   BranchPrediction prediction;
   prediction.branch_found = branch_found;
@@ -109,9 +110,6 @@ BranchPrediction PredictorOne::Predict(std::uint32_t pc) {
     metadata |= (1ULL << 1);
   if (loop_hit)
     metadata |= (1ULL << 2); // loop predictor was active
-  // Store sign of sc_sum (positive if >0)
-  if (sc_sum > 0)
-    metadata |= (1ULL << 3);
   // Pack SC table indices — kScIdxBits/kScIdxMask derived from kScTableSize in
   // header
   for (size_t t = 0; t < kScNumTables; ++t) {
@@ -120,6 +118,8 @@ BranchPrediction PredictorOne::Predict(std::uint32_t pc) {
   }
   // Pack loop iter snapshot (10 bits) at bit 40
   metadata |= (static_cast<std::uint64_t>(loop_iter_snap) & 0x3FFULL) << 40;
+  metadata |= (static_cast<std::uint64_t>(sc_sum) & kScSumMetadataMask)
+              << kScSumMetadataShift;
   prediction.information = metadata;
 
   if (branch_found) {
@@ -156,11 +156,9 @@ void PredictorOne::Update(const BranchResult &result, const BranchPrediction &pr
   std::uint64_t metadata = prediction.information;
   bool tage_taken = (metadata & (1ULL << 0)) != 0;
   bool sc_override = (metadata & (1ULL << 1)) != 0;
-  bool sc_sum_positive = (metadata & (1ULL << 3)) != 0;
-  int sc_sum = static_cast<int>(prediction.confidence);
-  if (!sc_sum_positive) {
-    sc_sum = -sc_sum;
-  }
+  int sc_sum = static_cast<int>(
+      (metadata >> kScSumMetadataShift) & kScSumMetadataMask);
+  if ((sc_sum & 0x100) != 0) sc_sum -= 0x200;
 
   bool tage_mispredicted = (tage_taken != result.taken);
 
