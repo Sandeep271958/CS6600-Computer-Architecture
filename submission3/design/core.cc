@@ -234,7 +234,9 @@ void Core::Execute() {
   // On misprediction the squash loop cleared consume_output_[ctrl_idx]; restore it.
   machine_->CompleteNonMemory(ctrl_output->sequence, ctrl_output->value, ctrl_output->halt);
   consume_output_[ctrl_idx] = true;
-  next_fetch_stopped_ = false;
+  if (opcode != Opcode::kHalt) {
+    next_fetch_stopped_ = false;
+  }
   snapshot.action = mispredicted ? "SQUASH" : "COMPLETE";
 }
 
