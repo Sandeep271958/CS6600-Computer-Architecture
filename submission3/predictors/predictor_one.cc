@@ -630,15 +630,39 @@ std::uint64_t PredictorOne::StorageBits() const {
   constexpr std::uint64_t kLoopAgeBits = 3;
   constexpr std::uint64_t kLoopConfidenceSeenBits = 2;
 
+  // --- Student 3 (Friend's) Budget ---
   const std::uint64_t sc_bits = kScNumTables * kScTableSize * kScCounterBits;
   const std::uint64_t loop_entry_bits = 1 + kLoopTagBits + kLoopIterBits +
                                         kLoopTripBits + 1 + kLoopAgeBits +
                                         kLoopConfidenceSeenBits;
   const std::uint64_t loop_bits = kLoopTableSize * loop_entry_bits;
-  const std::uint64_t history_bits =
-      sizeof(ghr_) * 8 + sizeof(path_history_) * 8;
 
-  return sc_bits + loop_bits + history_bits;
+  // --- Student 2 (Your) TAGE Budget ---
+  // BTB: Valid (1) + Tag (14) + Target (32)
+  const std::uint64_t btb_bits = kBtbSize * (1 + 14 + 32);
+
+  // Base Predictor: 3-bit counter
+  const std::uint64_t base_bits = kBaseSize * 3;
+
+  // Tagged tables: ctr (3) + u (2) + specific tag width
+  const std::uint64_t t1_bits = kT1Size * (3 + 2 + kTagWidths[1]);
+  const std::uint64_t t2_bits = kT2Size * (3 + 2 + kTagWidths[2]);
+  const std::uint64_t t3_bits = kT3Size * (3 + 2 + kTagWidths[3]);
+  const std::uint64_t t4_bits = kT4Size * (3 + 2 + kTagWidths[4]);
+  const std::uint64_t t5_bits = kT5Size * (3 + 2 + kTagWidths[5]);
+  const std::uint64_t t6_bits = kT6Size * (3 + 2 + kTagWidths[6]);
+
+  const std::uint64_t tage_bits =
+      t1_bits + t2_bits + t3_bits + t4_bits + t5_bits + t6_bits;
+
+  // Exact history registers: 130-bit GHR + 16-bit path history
+  const std::uint64_t history_bits = 130 + 16;
+
+  // Useful bit reset counter (from guide)
+  const std::uint64_t reset_counter_bits = 20;
+
+  return sc_bits + loop_bits + btb_bits + base_bits + tage_bits + history_bits +
+         reset_counter_bits;
 }
 
 const PredictorMetrics &PredictorOne::Metrics() const { return metrics_; }
