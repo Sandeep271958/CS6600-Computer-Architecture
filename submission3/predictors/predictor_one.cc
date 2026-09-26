@@ -332,6 +332,175 @@ void PredictorOne::Update(const BranchResult &result,
 
   bool tage_mispredicted = (tage_taken != result.taken);
 
+  // --- TAGE UPDATE LOGIC (Step 1 to 5) ---
+  int provider = static_cast<int>((metadata >> 50) & 0x7ULL);
+  int alt_provider = static_cast<int>((metadata >> 53) & 0x7ULL);
+  std::uint32_t pc = result.pc;
+
+  // Recompute indices for the tables
+  std::uint32_t indices[7];
+  indices[0] = (pc >> 2) % kBaseSize;
+  for (int i = 1; i <= 6; ++i) {
+    indices[i] = GetTageIndex(pc, i);
+  }
+
+  // Step 1: BTB Update
+  if (result.taken) {
+    std::uint32_t btb_idx = (pc >> 2) % kBtbSize;
+    btb_[btb_idx].valid = true;
+    btb_[btb_idx].tag = (pc >> 11) & 0x3FFF;
+    btb_[btb_idx].target = result.target;
+  }
+
+  // Step 2 & 3: Provider Counter & Useful Bit Update
+  if (provider == 0) {
+    if (result.taken)
+      base_table_[indices[0]].ctr =
+          std::min<std::uint8_t>(base_table_[indices[0]].ctr + 1, 7);
+    else if (base_table_[indices[0]].ctr > 0)
+      base_table_[indices[0]].ctr--;
+  } else {
+    TageEntry *prov_entry = nullptr;
+    if (provider == 1)
+      prov_entry = &t1_[indices[1]];
+    else if (provider == 2)
+      prov_entry = &t2_[indices[2]];
+    else if (provider == 3)
+      prov_entry = &t3_[indices[3]];
+    else if (provider == 4)
+      prov_entry = &t4_[indices[4]];
+    else if (provider == 5)
+      prov_entry = &t5_[indices[5]];
+    else
+      prov_entry = &t6_[indices[6]];
+
+    // Update counter
+    if (result.taken)
+      prov_entry->ctr = std::min<std::uint8_t>(prov_entry->ctr + 1, 7);
+    else if (prov_entry->ctr > 0)
+      prov_entry->ctr--;
+
+    // Update useful bit
+    if (alt_provider != provider) {
+      bool prov_correct = (tage_taken == result.taken);
+      bool alt_pred = false;
+      if (alt_provider == 0)
+        alt_pred = (base_table_[indices[0]].ctr >= 4);
+      else if (alt_provider == 1)
+        alt_pred = (t1_[indices[1]].ctr >= 4);
+      else if (alt_provider == 2)
+        alt_pred = (t2_[indices[2]].ctr >= 4);
+      else if (alt_provider == 3)
+        alt_pred = (t3_[indices[3]].ctr >= 4);
+      else if (alt_provider == 4)
+        alt_pred = (t4_[indices[4]].ctr >= 4);
+      else if (alt_provider == 5)
+        alt_pred = (t5_[indices[5]].ctr >= 4);
+      else
+        alt_pred = (t6_[indices[6]].ctr >= 4);
+
+      bool alt_correct = (alt_pred == result.taken);
+      if (prov_correct && !alt_correct)
+        prov_entry->u = std::min<std::uint8_t>(prov_entry->u + 1, 3);
+      else if (!prov_correct && alt_correct && prov_entry->u > 0)
+        prov_entry->u--;
+    }
+  }
+
+  // Step 4: Allocation on Misprediction
+  if (tage_mispredicted && provider < 6) {
+    std::vector<int> candidates;
+    for (int i = provider + 1; i <= 6; ++i) {
+      std::uint8_t u_val = 0;
+      if (i == 1)
+        u_val = t1_[indices[1]].u;
+      else if (i == 2)
+        u_val = t2_[indices[2]].u;
+      else if (i == 3)
+        u_val = t3_[indices[3]].u;
+      else if (i == 4)
+        u_val = t4_[indices[4]].u;
+      else if (i == 5)
+        u_val = t5_[indices[5]].u;
+      else
+        u_val = t6_[indices[6]].u;
+
+      if (u_val == 0)
+        candidates.push_back(i);
+    }
+
+    if (candidates.empty()) {
+      // Graceful decay: decrement u bits across candidate tables
+      for (int i = provider + 1; i <= 6; ++i) {
+        if (i == 1 && t1_[indices[1]].u > 0)
+          t1_[indices[1]].u--;
+        else if (i == 2 && t2_[indices[2]].u > 0)
+          t2_[indices[2]].u--;
+        else if (i == 3 && t3_[indices[3]].u > 0)
+          t3_[indices[3]].u--;
+        else if (i == 4 && t4_[indices[4]].u > 0)
+          t4_[indices[4]].u--;
+        else if (i == 5 && t5_[indices[5]].u > 0)
+          t5_[indices[5]].u--;
+        else if (i == 6 && t6_[indices[6]].u > 0)
+          t6_[indices[6]].u--;
+      }
+    } else {
+      // Pick the longest history candidate to allocate
+      int chosen = candidates.back();
+      TageEntry *chosen_entry = nullptr;
+      if (chosen == 1)
+        chosen_entry = &t1_[indices[1]];
+      else if (chosen == 2)
+        chosen_entry = &t2_[indices[2]];
+      else if (chosen == 3)
+        chosen_entry = &t3_[indices[3]];
+      else if (chosen == 4)
+        chosen_entry = &t4_[indices[4]];
+      else if (chosen == 5)
+        chosen_entry = &t5_[indices[5]];
+      else
+        chosen_entry = &t6_[indices[6]];
+
+      chosen_entry->valid = true;
+      chosen_entry->tag = GetTageTag(pc, chosen);
+      chosen_entry->ctr = result.taken ? 4 : 3; // Weakly taken or not-taken
+      chosen_entry->u = 0;
+    }
+  }
+
+  // Step 5: Periodic Useful-Bit Reset
+  useful_reset_counter_++;
+  if (useful_reset_counter_ == 256 * 1024) {
+    for (auto &e : t1_)
+      e.u &= 0b01;
+    for (auto &e : t2_)
+      e.u &= 0b01;
+    for (auto &e : t3_)
+      e.u &= 0b01;
+    for (auto &e : t4_)
+      e.u &= 0b01;
+    for (auto &e : t5_)
+      e.u &= 0b01;
+    for (auto &e : t6_)
+      e.u &= 0b01;
+  } else if (useful_reset_counter_ == 512 * 1024) {
+    for (auto &e : t1_)
+      e.u &= 0b10;
+    for (auto &e : t2_)
+      e.u &= 0b10;
+    for (auto &e : t3_)
+      e.u &= 0b10;
+    for (auto &e : t4_)
+      e.u &= 0b10;
+    for (auto &e : t5_)
+      e.u &= 0b10;
+    for (auto &e : t6_)
+      e.u &= 0b10;
+    useful_reset_counter_ = 0;
+  }
+  // ---------------------------------------
+
   // Step 7 - SC Update
   // Train SC if TAGE mispredicted, or if SC override was within threshold
   // margin, or if SC overrode
@@ -431,7 +600,9 @@ void PredictorOne::Update(const BranchResult &result,
   }
 
   // Step 9 - Update global history registers
-  ghr_ = (ghr_ << 1) | (result.taken ? 1ULL : 0ULL);
+  ghr_ <<= 1;
+  ghr_.set(0, result.taken);
+
   path_history_ = (path_history_ << 1) | ((result.pc >> 1) & 1u);
 
   // Update metrics for accuracy tracking
