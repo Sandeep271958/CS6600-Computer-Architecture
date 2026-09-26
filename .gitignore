@@ -7,3 +7,6 @@ CS6600_PA?.md
 *.o
 *.pdf
 !./report.pdf
+git_history.txt
+submission3/test_output.txt
+submission3/build_errors.txt
