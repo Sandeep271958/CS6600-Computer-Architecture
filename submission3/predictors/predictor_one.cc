@@ -277,15 +277,6 @@ BranchPrediction PredictorOne::Predict(std::uint32_t pc) {
   metadata |= (static_cast<std::uint64_t>(sc_sum) & kScSumMetadataMask)
               << kScSumMetadataShift;
 
-  // Pack TAGE specific metadata
-  metadata |= (static_cast<std::uint64_t>(provider) & 0x7ULL)
-              << 50; // Bits 50-52 (3 bits)
-  metadata |= (static_cast<std::uint64_t>(alt_provider) & 0x7ULL)
-              << 53; // Bits 53-55 (3 bits)
-  if (use_alt)
-    metadata |= (1ULL << 56); // Bit 56
-  // ----------------------------------------
-
   prediction.information = metadata;
 
   if (branch_found) {
@@ -333,8 +324,6 @@ void PredictorOne::Update(const BranchResult &result,
   bool tage_mispredicted = (tage_taken != result.taken);
 
   // --- TAGE UPDATE LOGIC (Step 1 to 5) ---
-  int provider = static_cast<int>((metadata >> 50) & 0x7ULL);
-  int alt_provider = static_cast<int>((metadata >> 53) & 0x7ULL);
   std::uint32_t pc = result.pc;
 
   // Recompute indices for the tables
@@ -342,6 +331,31 @@ void PredictorOne::Update(const BranchResult &result,
   indices[0] = (pc >> 2) % kBaseSize;
   for (int i = 1; i <= 6; ++i) {
     indices[i] = GetTageIndex(pc, i);
+  }
+
+  // Recompute provider and alt_provider because metadata bits 50+ are used by SC
+  int provider = 0;
+  int alt_provider = 0;
+  bool hit[7] = {false};
+  std::uint32_t tags[7] = {0};
+  for (int i = 1; i <= 6; ++i) {
+    tags[i] = GetTageTag(pc, i);
+    if (i == 1) hit[i] = t1_[indices[i]].valid && (t1_[indices[i]].tag == tags[i]);
+    else if (i == 2) hit[i] = t2_[indices[2]].valid && (t2_[indices[2]].tag == tags[i]);
+    else if (i == 3) hit[i] = t3_[indices[3]].valid && (t3_[indices[3]].tag == tags[i]);
+    else if (i == 4) hit[i] = t4_[indices[4]].valid && (t4_[indices[4]].tag == tags[i]);
+    else if (i == 5) hit[i] = t5_[indices[5]].valid && (t5_[indices[5]].tag == tags[i]);
+    else if (i == 6) hit[i] = t6_[indices[6]].valid && (t6_[indices[6]].tag == tags[i]);
+  }
+  for (int i = 6; i >= 1; --i) {
+    if (hit[i]) {
+      if (provider == 0) {
+        provider = i;
+      } else if (alt_provider == 0) {
+        alt_provider = i;
+        break;
+      }
+    }
   }
 
   // Step 1: BTB Update
