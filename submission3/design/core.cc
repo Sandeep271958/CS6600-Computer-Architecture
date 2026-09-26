@@ -196,6 +196,18 @@ void Core::Execute() {
     if (decision.mispredicted) {
       mispredicted = true;
       next_pc_ = decision.correct_next_pc;
+
+      // machine_->SquashAfter internally calls InvalidateFetchesAfter, which
+      // bumps fetch_generation_next and clears kReady wrong-path slots from
+      // fetch_next. Fetch runs in the SAME cycle (after Execute) and would
+      // call PeekFetched (reads from fetch_current — the old-gen kReady slot
+      // is still visible there) then ConsumeFetched (looks in fetch_next —
+      // the slot is gone → "ready fetch disappeared"). Setting
+      // control_recognized_this_cycle_ = true here blocks Fetch from calling
+      // PeekFetched/ConsumeFetched in this cycle. The flag is cleared at
+      // BeginCycle() so it only affects this one cycle.
+      control_recognized_this_cycle_ = true;
+
       SquashReport report = machine_->SquashAfter(result.sequence);
 
       // Sum pipeline squash counts

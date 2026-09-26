@@ -50,13 +50,12 @@ bool SpeculationController::IsSpeculative(std::uint64_t sequence) const {
 }
 
 std::uint64_t SpeculationController::SpeculationDepth(std::uint64_t sequence) const {
-  // Naive Implementation O(N)
-  uint64_t speculation_depth = 0;
+  std::uint64_t depth = 0;
   for (const auto &checkpoint : impl_->checkpoints) {
     if (checkpoint.sequence < sequence)
-      ++speculation_depth;
+      ++depth;
   }
-  return speculation_depth;
+  return depth;
 
   // Assuming checkpoints is maintained in strictly increasing sequence order.
   // O(LogN) Implementation
