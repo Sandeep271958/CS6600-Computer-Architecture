@@ -1,8 +1,16 @@
 #include "predictors/predictor_one.h"
 
+#include <cstdlib>
 #include <stdexcept>
 
 namespace pipesim {
+
+namespace {
+
+constexpr unsigned kScSumMetadataShift = 50;
+constexpr std::uint64_t kScSumMetadataMask = 0x1FFULL;
+
+} // namespace
 
 std::string PredictorOne::Name() const { return "PAPER_ONE"; }
 
@@ -85,17 +93,10 @@ BranchPrediction PredictorOne::Predict(std::uint32_t pc) {
     }
   }
 
-  bool sc_override = false;
-  bool final_taken = tage_taken;
-
-  // Override TAGE if SC has strong opposing conviction
-  if (tage_taken && sc_sum < -kScThreshold) {
-    sc_override = true;
-    final_taken = false;
-  } else if (!tage_taken && sc_sum > kScThreshold) {
-    sc_override = true;
-    final_taken = true;
-  }
+  const bool sc_taken = sc_sum > 0;
+  const bool sc_override =
+      std::abs(sc_sum) > kScThreshold && sc_taken != tage_taken;
+  const bool tage_or_sc_taken = sc_override ? sc_taken : tage_taken;
 
   // Step 5 - Loop Predictor Lookup
   std::uint32_t loop_idx = GetLoopIndex(pc);
@@ -114,7 +115,7 @@ BranchPrediction PredictorOne::Predict(std::uint32_t pc) {
   }
 
   // Final taken: loop overrides SC/TAGE when confident
-  bool final_taken_with_loop = loop_hit ? loop_pred : final_taken;
+  const bool final_taken_with_loop = loop_hit ? loop_pred : tage_or_sc_taken;
 
   BranchPrediction prediction;
   prediction.branch_found = branch_found;
@@ -130,9 +131,6 @@ BranchPrediction PredictorOne::Predict(std::uint32_t pc) {
     metadata |= (1ULL << 1);
   if (loop_hit)
     metadata |= (1ULL << 2); // loop predictor was active
-  // Store sign of sc_sum (positive if >0)
-  if (sc_sum > 0)
-    metadata |= (1ULL << 3);
   // Pack SC table indices — kScIdxBits/kScIdxMask derived from kScTableSize in
   // header
   for (size_t t = 0; t < kScNumTables; ++t) {
@@ -142,6 +140,8 @@ BranchPrediction PredictorOne::Predict(std::uint32_t pc) {
   }
   // Pack loop iter snapshot (10 bits) at bit 40
   metadata |= (static_cast<std::uint64_t>(loop_iter_snap) & 0x3FFULL) << 40;
+  metadata |= (static_cast<std::uint64_t>(sc_sum) & kScSumMetadataMask)
+              << kScSumMetadataShift;
   prediction.information = metadata;
 
   if (branch_found) {
@@ -159,10 +159,19 @@ BranchPrediction PredictorOne::Predict(std::uint32_t pc) {
 
 void PredictorOne::ObserveInstruction(const Instruction &instruction,
                                       const BranchPrediction &prediction) {
-  (void)instruction;
-  (void)prediction;
-  throw std::runtime_error(
-      "PredictorOne::ObserveInstruction: TODO(PA3-PREDICTOR-ONE)");
+  // Just to update metrics and a Sanity Check
+
+  const bool actual_branch = instruction.opcode == Opcode::kBeq ||
+                             instruction.opcode == Opcode::kBne ||
+                             instruction.opcode == Opcode::kJ;
+
+  if (prediction.branch_found && !actual_branch) {
+    ++metrics_.false_branch_predictions;
+  }
+
+  else if (!prediction.branch_found && actual_branch) {
+    ++metrics_.missed_branches;
+  }
 }
 
 void PredictorOne::Update(const BranchResult &result,
@@ -172,11 +181,10 @@ void PredictorOne::Update(const BranchResult &result,
   std::uint64_t metadata = prediction.information;
   bool tage_taken = (metadata & (1ULL << 0)) != 0;
   bool sc_override = (metadata & (1ULL << 1)) != 0;
-  bool sc_sum_positive = (metadata & (1ULL << 3)) != 0;
-  int sc_sum = static_cast<int>(prediction.confidence);
-  if (!sc_sum_positive) {
-    sc_sum = -sc_sum;
-  }
+  int sc_sum =
+      static_cast<int>((metadata >> kScSumMetadataShift) & kScSumMetadataMask);
+  if ((sc_sum & 0x100) != 0)
+    sc_sum -= 0x200;
 
   bool tage_mispredicted = (tage_taken != result.taken);
 
@@ -193,7 +201,8 @@ void PredictorOne::Update(const BranchResult &result,
         return val;
       };
 
-      std::uint32_t pc = result.pc;
+      (void)result
+          .pc; // pc unused; suppress warning if needed in future extensions
       for (size_t t = 0; t < sc_tables_.size(); ++t) {
         // Unpack using same kScIdxBits/kScIdxMask from header
         std::uint32_t idx = static_cast<std::uint32_t>(
@@ -300,8 +309,21 @@ void PredictorOne::Update(const BranchResult &result,
 }
 
 std::uint64_t PredictorOne::StorageBits() const {
-  throw std::runtime_error(
-      "PredictorOne::StorageBits: TODO(PA3-PREDICTOR-ONE)");
+  constexpr std::uint64_t kScCounterBits = 6;
+  constexpr std::uint64_t kLoopIterBits = 10;
+  constexpr std::uint64_t kLoopTripBits = 10;
+  constexpr std::uint64_t kLoopAgeBits = 3;
+  constexpr std::uint64_t kLoopConfidenceSeenBits = 2;
+
+  const std::uint64_t sc_bits = kScNumTables * kScTableSize * kScCounterBits;
+  const std::uint64_t loop_entry_bits = 1 + kLoopTagBits + kLoopIterBits +
+                                        kLoopTripBits + 1 + kLoopAgeBits +
+                                        kLoopConfidenceSeenBits;
+  const std::uint64_t loop_bits = kLoopTableSize * loop_entry_bits;
+  const std::uint64_t history_bits =
+      sizeof(ghr_) * 8 + sizeof(path_history_) * 8;
+
+  return sc_bits + loop_bits + history_bits;
 }
 
 const PredictorMetrics &PredictorOne::Metrics() const { return metrics_; }

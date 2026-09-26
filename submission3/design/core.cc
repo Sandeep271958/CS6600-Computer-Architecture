@@ -136,6 +136,11 @@ void Core::Memory() {
       continue;
 
     snapshot = SnapshotFor(output->instruction);
+
+    // Control pipeline output is owned by Core::Execute() (branch resolution).
+    if (static_cast<ExecutionUnitKind>(index) == ExecutionUnitKind::kControl)
+      continue;
+
     if (static_cast<ExecutionUnitKind>(index) == ExecutionUnitKind::kAgu) {
       if (!machine_->PendingDataHasCapacity()) {
         machine_->RecordCpuStall(CpuStallReason::kPendingDataFull);
@@ -153,8 +158,6 @@ void Core::Memory() {
       machine_->CompleteNonMemory(output->sequence, output->value, output->halt);
       consume_output_[index] = true;
       snapshot.action = "COMPLETE";
-      if (static_cast<ExecutionUnitKind>(index) == ExecutionUnitKind::kControl)
-        next_fetch_stopped_ = false;
     }
   }
 }
@@ -164,26 +167,63 @@ void Core::Execute() {
   snapshot = StageSnapshot();
   snapshot.action = "EMPTY";
 
-  next_ex_mem_ = ExecutionLatch();
-  if (!id_ex_.valid)
+  // Branch resolution fires when the control execution pipeline produces output.
+  const std::size_t ctrl_idx = static_cast<std::size_t>(ExecutionUnitKind::kControl);
+  const std::optional<ExecutionResult> ctrl_output = pipelines_[ctrl_idx]->OutputIntent();
+
+  if (!ctrl_output)
     return;
 
-  DecodeResult dec = main_control_->Decode(id_ex_.instruction);
-  next_ex_mem_.valid = true;
-  next_ex_mem_.sequence = id_ex_.sequence;
-  next_ex_mem_.instruction = id_ex_.instruction;
-  next_ex_mem_.lhs = id_ex_.lhs;
-  next_ex_mem_.rhs = id_ex_.rhs;
-  next_ex_mem_.store_value = id_ex_.store_value;
-  next_ex_mem_.writes_register = dec.writes_register;
+  snapshot = SnapshotFor(ctrl_output->instruction);
+  const Opcode opcode = ctrl_output->instruction.opcode;
+  bool mispredicted = false;
 
-  const Opcode opcode = id_ex_.instruction.opcode;
-  next_ex_mem_.memory_read = opcode == Opcode::kLw;
-  next_ex_mem_.memory_write = opcode == Opcode::kSw;
-  next_ex_mem_.halt = opcode == Opcode::kHalt;
+  if (opcode == Opcode::kBeq || opcode == Opcode::kBne || opcode == Opcode::kJ) {
+    BranchResult result;
+    result.sequence      = ctrl_output->sequence;
+    result.pc            = ctrl_output->instruction.pc;
+    result.type          = (opcode == Opcode::kBeq || opcode == Opcode::kBne)
+                             ? BranchType::kConditional : BranchType::kUnconditional;
+    // The control pipeline computed the actual outcome from the latched operands.
+    result.taken         = ctrl_output->redirect;
+    result.target        = ctrl_output->next_pc;
+    result.fetch_cycle   = ctrl_output->fetch_cycle;
+    result.resolve_cycle = current_boundary_;
 
-  snapshot = SnapshotFor(id_ex_.instruction);
-  snapshot.action = "RUN";
+    RecoveryDecision decision = speculation_control_->Resolve(result);
+    branch_prediction_->Resolve(result, ctrl_output->predictions); // metrics only
+
+    if (decision.mispredicted) {
+      mispredicted = true;
+      next_pc_ = decision.correct_next_pc;
+      SquashReport report = machine_->SquashAfter(result.sequence);
+
+      // Sum pipeline squash counts
+      std::uint64_t pipeline_operations = 0;
+      for (std::size_t i = 0; i < pipelines_.size(); ++i) {
+        pipeline_operations += pipelines_[i]->SquashAfter(result.sequence);
+        consume_output_[i] = false;
+      }
+
+      speculation_control_->RemoveYoungerCheckpoints(result.sequence);
+      branch_prediction_->RecordSquash(report.fetches, pipeline_operations,
+                                       report.completions, report.data_requests);
+
+      // Squash IF/ID only if it holds a younger mis-speculated instruction.
+      // Set both current and next so the latch doesn't survive commit.
+      if (if_id_.valid && if_id_.fetched.sequence > result.sequence) {
+        if_id_.valid      = false;
+        next_if_id_.valid = false;
+      }
+    }
+  }
+
+  // The branch/halt always retires normally regardless of prediction outcome.
+  // On misprediction the squash loop cleared consume_output_[ctrl_idx]; restore it.
+  machine_->CompleteNonMemory(ctrl_output->sequence, ctrl_output->value, ctrl_output->halt);
+  consume_output_[ctrl_idx] = true;
+  next_fetch_stopped_ = false;
+  snapshot.action = mispredicted ? "SQUASH" : "COMPLETE";
 }
 
 void Core::Decode() {
@@ -204,8 +244,7 @@ void Core::Decode() {
     // Observe the decoded instruction. Returns true if the predictor incorrectly
     // identified this non-branch as a branch (false branch). Redirect to pc+4
     // and squash all younger work immediately.
-    bool false_branch = branch_prediction_->ObserveInstruction(
-        if_id_.fetched.instruction, if_id_.fetched.predictions);
+    bool false_branch = branch_prediction_->ObserveInstruction(if_id_.fetched.instruction, if_id_.fetched.predictions);
     if (false_branch) {
       next_pc_ = if_id_.fetched.instruction.pc + 4;
       machine_->InvalidateFetchesAfter(if_id_.fetched.sequence);
@@ -217,125 +256,117 @@ void Core::Decode() {
 
     if (!false_branch) {
 
-    HazardResult hazard_result = hazard_control_->Check(machine_, if_id_.fetched.sequence, if_id_.fetched.instruction,
-                                                        decode_result.writes_register);
+      HazardResult hazard_result = hazard_control_->Check(machine_, if_id_.fetched.sequence, if_id_.fetched.instruction,
+                                                          decode_result.writes_register);
 
-    if (!machine_->CompletionQueueHasCapacity()) {
-      machine_->RecordCpuStall(CpuStallReason::kCompletionQueueFull);
-      snapshot.action = "STALL";
-      next_fetch_stopped_ = true;
-    } else if (hazard_result == HazardResult::kRaw) {
-      machine_->RecordCpuStall(CpuStallReason::kOutstandingRaw);
-      snapshot.action = "STALL";
-      next_fetch_stopped_ = true;
-    } else if (decode_result.writes_register &&
-               machine_->HasOlderDestination(if_id_.fetched.sequence, if_id_.fetched.instruction.rd)) {
-      machine_->RecordCpuStall(CpuStallReason::kOutstandingWaw);
-      snapshot.action = "STALL";
-      next_fetch_stopped_ = true;
-    } else {
-      ExecutionPipeline *target_pipeline = pipelines_[static_cast<std::size_t>(decode_result.unit)];
-
-      if (!speculation_control_->CanDispatch(if_id_.fetched.sequence, if_id_.fetched.instruction)) {
-        machine_->RecordCpuStall(CpuStallReason::kControlDisabled);
+      if (!machine_->CompletionQueueHasCapacity()) {
+        machine_->RecordCpuStall(CpuStallReason::kCompletionQueueFull);
+        snapshot.action = "STALL";
+        next_fetch_stopped_ = true;
+      } else if (hazard_result == HazardResult::kRaw) {
+        machine_->RecordCpuStall(CpuStallReason::kOutstandingRaw);
+        snapshot.action = "STALL";
+        next_fetch_stopped_ = true;
+      } else if (decode_result.writes_register &&
+                 machine_->HasOlderDestination(if_id_.fetched.sequence, if_id_.fetched.instruction.rd)) {
+        machine_->RecordCpuStall(CpuStallReason::kOutstandingWaw);
         snapshot.action = "STALL";
         next_fetch_stopped_ = true;
       } else {
+        ExecutionPipeline *target_pipeline = pipelines_[static_cast<std::size_t>(decode_result.unit)];
 
-        if (!target_pipeline->CanAccept(current_boundary_,
-                                        consume_output_[static_cast<std::size_t>(decode_result.unit)])) {
-          machine_->RecordCpuStall(CpuStallReason::kExecutionUnitBusy);
+        if (!speculation_control_->CanDispatch(if_id_.fetched.sequence, if_id_.fetched.instruction)) {
+          machine_->RecordCpuStall(CpuStallReason::kControlDisabled);
           snapshot.action = "STALL";
           next_fetch_stopped_ = true;
         } else {
-          std::optional<std::uint64_t> result_boundary = std::nullopt;
-          bool slot_ok = true;
-          if (decode_result.unit != pipesim::ExecutionUnitKind::kAgu) {
-            std::uint64_t rb = current_boundary_ + static_cast<std::uint64_t>(target_pipeline->config().latency) + 2;
-            result_boundary = rb;
-            if (!machine_->NormalCompletionSlotAvailable(rb)) {
-              slot_ok = false;
-            }
-          }
 
-          if (!slot_ok) {
-            machine_->RecordCpuStall(CpuStallReason::kExecutionCompletionSlot);
+          if (!target_pipeline->CanAccept(current_boundary_,
+                                          consume_output_[static_cast<std::size_t>(decode_result.unit)])) {
+            machine_->RecordCpuStall(CpuStallReason::kExecutionUnitBusy);
             snapshot.action = "STALL";
             next_fetch_stopped_ = true;
           } else {
-            bool allocated = machine_->TryAllocateCompletion(if_id_.fetched.sequence, if_id_.fetched.instruction,
-                                                             decode_result.writes_register, result_boundary);
+            std::optional<std::uint64_t> result_boundary = std::nullopt;
+            bool slot_ok = true;
+            if (decode_result.unit != pipesim::ExecutionUnitKind::kAgu) {
+              std::uint64_t rb = current_boundary_ + static_cast<std::uint64_t>(target_pipeline->config().latency) + 2;
+              result_boundary = rb;
+              if (!machine_->NormalCompletionSlotAvailable(rb)) {
+                slot_ok = false;
+              }
+            }
 
-            if (!allocated) {
+            if (!slot_ok) {
               machine_->RecordCpuStall(CpuStallReason::kExecutionCompletionSlot);
               snapshot.action = "STALL";
               next_fetch_stopped_ = true;
             } else {
-              snapshot.action = "DISPATCH";
-              if_id_consumed_ = true;
-              next_if_id_.valid = false;
-              next_fetch_stopped_ = false;
+              bool allocated = machine_->TryAllocateCompletion(if_id_.fetched.sequence, if_id_.fetched.instruction,
+                                                               decode_result.writes_register, result_boundary);
 
-              if (target_unit == pipesim::ExecutionUnitKind::kControl) {
-                control_recognized_this_cycle_ = true;
+              if (!allocated) {
+                machine_->RecordCpuStall(CpuStallReason::kExecutionCompletionSlot);
+                snapshot.action = "STALL";
                 next_fetch_stopped_ = true;
+              } else {
+                snapshot.action = "DISPATCH";
+                if_id_consumed_ = true;
+                next_if_id_.valid = false;
+                next_fetch_stopped_ = false;
 
-                bool taken = false;
-                std::uint32_t target = 0;
-                auto opcode = if_id_.fetched.instruction.opcode;
+                if (target_unit == pipesim::ExecutionUnitKind::kControl) {
+                  auto opcode = if_id_.fetched.instruction.opcode;
 
-                if (opcode == pipesim::Opcode::kBeq) {
-                  std::uint32_t first = machine_->ReadRegister(if_id_.fetched.instruction.rs1);
-                  std::uint32_t second = machine_->ReadRegister(if_id_.fetched.instruction.rs2);
-                  taken = (first == second);
-                  target = if_id_.fetched.instruction.immediate;
-                } else if (opcode == pipesim::Opcode::kBne) {
-                  std::uint32_t first = machine_->ReadRegister(if_id_.fetched.instruction.rs1);
-                  std::uint32_t second = machine_->ReadRegister(if_id_.fetched.instruction.rs2);
-                  taken = (first != second);
-                  target = if_id_.fetched.instruction.immediate;
-                } else if (opcode == pipesim::Opcode::kJ) {
-                  taken = true;
-                  target = if_id_.fetched.instruction.immediate;
+                  if (opcode == Opcode::kHalt) {
+                    // kHalt terminates the program: stop all further fetching this
+                    // cycle and invalidate any instructions already in the fetch queue
+                    // that are younger than halt (they must never execute).
+                    control_recognized_this_cycle_ = true;
+                    next_fetch_stopped_ = true;
+                    machine_->InvalidateFetchesAfter(if_id_.fetched.sequence);
+                  } else {
+                    // kBeq / kBne / kJ — speculative branch.
+                    // DO NOT stop fetch here: CanFetch() in Fetch gates further
+                    // speculation based on checkpoint capacity; stopping fetch here
+                    // would defeat the entire speculative-execution design.
+                    // DO NOT read registers or compute taken/target: that is the
+                    // CONTROL execution unit's job. Reading stale register values at
+                    // Decode and overwriting next_pc_ would discard the predictor's
+                    // redirect that was already applied in Fetch this cycle.
+                    // DO NOT call InvalidateFetchesAfter here: the instructions
+                    // fetched on the predicted path are correct-path speculation;
+                    // squashing them here would remove valid work.
+                    //
+                    // Record the checkpoint so Execute can recover on misprediction.
+                    BranchCheckpoint cp;
+                    cp.sequence = if_id_.fetched.sequence;
+                    cp.predicted_next_pc = if_id_.fetched.predictions.next_pc;
+                    cp.predictions = if_id_.fetched.predictions;
+                    speculation_control_->AddCheckpoint(cp);
+                    branch_prediction_->RecordSpeculativeDispatch();
+                  }
                 }
 
-                if (taken || opcode == Opcode::kHalt) {
-                  machine_->InvalidateFetchesAfter(if_id_.fetched.sequence);
-                  if (taken)
-                    next_pc_ = target;
-                }
-
-                // Create a branch checkpoint for kBeq, kBne, kJ (not kHalt).
-                // This checkpoint is the recovery point if this branch mispredicts.
-                if (opcode != Opcode::kHalt) {
-                  BranchCheckpoint cp;
-                  cp.sequence = if_id_.fetched.sequence;
-                  cp.predicted_next_pc = if_id_.fetched.predictions.next_pc;
-                  cp.predictions = if_id_.fetched.predictions;
-                  speculation_control_->AddCheckpoint(cp);
-                  branch_prediction_->RecordSpeculativeDispatch();
-                }
+                pipesim::ExecutionOperation op;
+                op.sequence = if_id_.fetched.sequence;
+                op.instruction = if_id_.fetched.instruction;
+                op.dispatch_boundary = current_boundary_;
+                op.fetch_cycle = if_id_.fetched.fetch_cycle;
+                op.predictions = if_id_.fetched.predictions;
+                op.lhs = machine_->ReadRegister(if_id_.fetched.instruction.rs1);
+                op.rhs = (if_id_.fetched.instruction.opcode == pipesim::Opcode::kAddi ||
+                          if_id_.fetched.instruction.opcode == pipesim::Opcode::kLw ||
+                          if_id_.fetched.instruction.opcode == pipesim::Opcode::kSw)
+                             ? static_cast<std::uint32_t>(if_id_.fetched.instruction.immediate)
+                             : machine_->ReadRegister(if_id_.fetched.instruction.rs2);
+                op.store_value = machine_->ReadRegister(if_id_.fetched.instruction.rs2);
+                dispatch_op = op;
               }
-
-              pipesim::ExecutionOperation op;
-              op.sequence = if_id_.fetched.sequence;
-              op.instruction = if_id_.fetched.instruction;
-              op.dispatch_boundary = current_boundary_;
-              op.fetch_cycle = if_id_.fetched.fetch_cycle;
-              op.predictions = if_id_.fetched.predictions;
-              op.lhs = machine_->ReadRegister(if_id_.fetched.instruction.rs1);
-              op.rhs = (if_id_.fetched.instruction.opcode == pipesim::Opcode::kAddi ||
-                        if_id_.fetched.instruction.opcode == pipesim::Opcode::kLw ||
-                        if_id_.fetched.instruction.opcode == pipesim::Opcode::kSw)
-                           ? static_cast<std::uint32_t>(if_id_.fetched.instruction.immediate)
-                           : machine_->ReadRegister(if_id_.fetched.instruction.rs2);
-              op.store_value = machine_->ReadRegister(if_id_.fetched.instruction.rs2);
-              dispatch_op = op;
             }
           }
-        }
-      } // end CanDispatch else
-    }
+        } // end CanDispatch else
+      }
     } // end !false_branch
   }
 
