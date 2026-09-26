@@ -16,7 +16,7 @@ std::string PredictorOne::Name() const { return "PAPER_ONE"; }
 
 std::uint32_t PredictorOne::GetScIndex(size_t table_idx,
                                        std::uint32_t pc) const {
-
+  std::uint64_t ghr_lower = 0;
   for (int i = 0; i < 64; ++i) {
     if (ghr_[i])
       ghr_lower |= (1ULL << i);
@@ -26,13 +26,14 @@ std::uint32_t PredictorOne::GetScIndex(size_t table_idx,
   case 0:
     return (pc >> 1) % kScTableSize;
   case 1:
-    return ((pc >> 1) ^ ghr_) % kScTableSize;
+    return ((pc >> 1) ^ ghr_lower) % kScTableSize;
   case 2:
     return (path_history_ >> 1) % kScTableSize;
   case 3:
-    return ghr_ % kScTableSize;
+    return ghr_lower % kScTableSize;
   default:
-    return ((pc >> 1) ^ (ghr_ >> table_idx) ^ path_history_) % kScTableSize;
+    return ((pc >> 1) ^ (ghr_lower >> table_idx) ^ path_history_) %
+           kScTableSize;
   }
 }
 
@@ -156,7 +157,6 @@ BranchPrediction PredictorOne::Predict(std::uint32_t pc) {
 
   // --- Step 4 & 5: Provider Selection ---
   bool tage_taken = base_taken;
-  bool use_alt = false;
 
   if (provider > 0) {
     // Get the counter and useful bit of the provider
@@ -186,8 +186,6 @@ BranchPrediction PredictorOne::Predict(std::uint32_t pc) {
 
     // If newly allocated (u == 0) and weak, we might use alt_provider instead
     if (prov_u == 0 && prov_is_weak && alt_provider > 0) {
-      use_alt = true;
-
       std::uint8_t alt_ctr;
       if (alt_provider == 1)
         alt_ctr = t1_[indices[1]].ctr;
