@@ -46,6 +46,34 @@ std::uint32_t PredictorOne::GetLoopTag(std::uint32_t pc) const {
   return (pc >> 3) & ((1u << kLoopTagBits) - 1u);
 }
 
+std::uint32_t PredictorOne::Fold(int history_length, int fold_width) const {
+  std::uint32_t result = 0;
+  for (int i = 0; i < history_length; ++i) {
+    if (ghr_[i]) {
+      result ^= (1u << (i % fold_width));
+    }
+  }
+  return result & ((1u << fold_width) - 1u);
+}
+
+std::uint32_t PredictorOne::GetTageIndex(std::uint32_t pc,
+                                         int table_idx) const {
+  int n = kIndexWidths[table_idx];
+  std::uint32_t csr = Fold(kHistoryLengths[table_idx], n);
+  std::uint32_t mask = (1u << n) - 1u;
+  // Hash formula from the Workload Guide
+  return (pc ^ (pc >> 2) ^ csr ^ path_history_) & mask;
+}
+
+std::uint32_t PredictorOne::GetTageTag(std::uint32_t pc, int table_idx) const {
+  int tag_width = kTagWidths[table_idx];
+  std::uint32_t csr1 = Fold(kHistoryLengths[table_idx], tag_width);
+  std::uint32_t csr2 = Fold(kHistoryLengths[table_idx], tag_width - 1);
+  std::uint32_t mask = (1u << tag_width) - 1u;
+  // Hash formula from the Workload Guide
+  return (pc ^ csr1 ^ (csr2 << 1)) & mask;
+}
+
 void PredictorOne::Reset() {
   metrics_ = PredictorMetrics();
 
@@ -75,10 +103,111 @@ void PredictorOne::Reset() {
 BranchPrediction PredictorOne::Predict(std::uint32_t pc) {
   ++metrics_.lookups;
 
-  // Placeholder for BTB and TAGE
-  bool branch_found = false;
-  std::uint32_t target = 0;
-  bool tage_taken = false;
+  // --- Step 1: BTB Lookup ---
+  std::uint32_t btb_idx = (pc >> 2) % kBtbSize;
+  std::uint16_t btb_tag = (pc >> 11) & 0x3FFF; // 14-bit tag
+  bool branch_found = btb_[btb_idx].valid && (btb_[btb_idx].tag == btb_tag);
+  std::uint32_t target = branch_found ? btb_[btb_idx].target : 0;
+
+  // --- Step 2 & 3: TAGE Lookups ---
+  int provider = 0; // 0 means base predictor (T0)
+  int alt_provider = 0;
+
+  // Store hit information for the tables
+  bool hit[7] = {false};
+  std::uint32_t indices[7] = {0};
+  std::uint32_t tags[7] = {0};
+
+  // Base Predictor (T0) lookup
+  indices[0] = (pc >> 2) % kBaseSize;
+  bool base_taken = base_table_[indices[0]].ctr >= 4;
+
+  // Query T1 to T6
+  for (int i = 1; i <= 6; ++i) {
+    indices[i] = GetTageIndex(pc, i);
+    tags[i] = GetTageTag(pc, i);
+
+    // Check if valid and tag matches based on the correct table
+    if (i == 1)
+      hit[i] = t1_[indices[i]].valid && (t1_[indices[i]].tag == tags[i]);
+    else if (i == 2)
+      hit[i] = t2_[indices[i]].valid && (t2_[indices[i]].tag == tags[i]);
+    else if (i == 3)
+      hit[i] = t3_[indices[i]].valid && (t3_[indices[i]].tag == tags[i]);
+    else if (i == 4)
+      hit[i] = t4_[indices[i]].valid && (t4_[indices[i]].tag == tags[i]);
+    else if (i == 5)
+      hit[i] = t5_[indices[i]].valid && (t5_[indices[i]].tag == tags[i]);
+    else if (i == 6)
+      hit[i] = t6_[indices[i]].valid && (t6_[indices[i]].tag == tags[i]);
+  }
+
+  // Find provider (longest hit) and alt_provider (second longest hit)
+  for (int i = 6; i >= 1; --i) {
+    if (hit[i]) {
+      if (provider == 0) {
+        provider = i;
+      } else if (alt_provider == 0) {
+        alt_provider = i;
+        break; // Found both
+      }
+    }
+  }
+
+  // --- Step 4 & 5: Provider Selection ---
+  bool tage_taken = base_taken;
+  bool use_alt = false;
+
+  if (provider > 0) {
+    // Get the counter and useful bit of the provider
+    std::uint8_t prov_ctr, prov_u;
+    if (provider == 1) {
+      prov_ctr = t1_[indices[1]].ctr;
+      prov_u = t1_[indices[1]].u;
+    } else if (provider == 2) {
+      prov_ctr = t2_[indices[2]].ctr;
+      prov_u = t2_[indices[2]].u;
+    } else if (provider == 3) {
+      prov_ctr = t3_[indices[3]].ctr;
+      prov_u = t3_[indices[3]].u;
+    } else if (provider == 4) {
+      prov_ctr = t4_[indices[4]].ctr;
+      prov_u = t4_[indices[4]].u;
+    } else if (provider == 5) {
+      prov_ctr = t5_[indices[5]].ctr;
+      prov_u = t5_[indices[5]].u;
+    } else {
+      prov_ctr = t6_[indices[6]].ctr;
+      prov_u = t6_[indices[6]].u;
+    }
+
+    bool prov_pred = (prov_ctr >= 4);
+    bool prov_is_weak = (prov_ctr == 3 || prov_ctr == 4);
+
+    // If newly allocated (u == 0) and weak, we might use alt_provider instead
+    if (prov_u == 0 && prov_is_weak && alt_provider > 0) {
+      use_alt = true;
+
+      std::uint8_t alt_ctr;
+      if (alt_provider == 1)
+        alt_ctr = t1_[indices[1]].ctr;
+      else if (alt_provider == 2)
+        alt_ctr = t2_[indices[2]].ctr;
+      else if (alt_provider == 3)
+        alt_ctr = t3_[indices[3]].ctr;
+      else if (alt_provider == 4)
+        alt_ctr = t4_[indices[4]].ctr;
+      else if (alt_provider == 5)
+        alt_ctr = t5_[indices[5]].ctr;
+      else
+        alt_ctr = base_table_[indices[0]]
+                      .ctr; // If no alt tagged table, fallback to base
+
+      tage_taken = (alt_ctr >= 4);
+    } else {
+      tage_taken = prov_pred;
+    }
+  }
 
   // Step 4 - Statistical Corrector (SC) Lookup
   int sc_sum = 0;
@@ -130,18 +259,33 @@ BranchPrediction PredictorOne::Predict(std::uint32_t pc) {
   if (sc_override)
     metadata |= (1ULL << 1);
   if (loop_hit)
-    metadata |= (1ULL << 2); // loop predictor was active
-  // Pack SC table indices — kScIdxBits/kScIdxMask derived from kScTableSize in
-  // header
+    metadata |= (1ULL << 2);
+  if (sc_sum > 0)
+    metadata |= (1ULL << 3);
+
+  // Pack SC table indices
   for (size_t t = 0; t < kScNumTables; ++t) {
     uint32_t idx = GetScIndex(t, pc);
     metadata |= (static_cast<std::uint64_t>(idx) & kScIdxMask)
                 << (4 + t * kScIdxBits);
   }
-  // Pack loop iter snapshot (10 bits) at bit 40
+
+  // Pack loop iter snapshot
   metadata |= (static_cast<std::uint64_t>(loop_iter_snap) & 0x3FFULL) << 40;
+
+  // Pack SC sum
   metadata |= (static_cast<std::uint64_t>(sc_sum) & kScSumMetadataMask)
               << kScSumMetadataShift;
+
+  // Pack TAGE specific metadata
+  metadata |= (static_cast<std::uint64_t>(provider) & 0x7ULL)
+              << 50; // Bits 50-52 (3 bits)
+  metadata |= (static_cast<std::uint64_t>(alt_provider) & 0x7ULL)
+              << 53; // Bits 53-55 (3 bits)
+  if (use_alt)
+    metadata |= (1ULL << 56); // Bit 56
+  // ----------------------------------------
+
   prediction.information = metadata;
 
   if (branch_found) {

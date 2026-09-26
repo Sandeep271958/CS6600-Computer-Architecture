@@ -72,6 +72,15 @@ private:
   std::vector<TageEntry> t6_;
   std::uint32_t useful_reset_counter_ = 0;
 
+  // TAGE configurations
+  static constexpr int kHistoryLengths[7] = {0, 6, 11, 20, 37, 68, 130};
+  static constexpr int kIndexWidths[7] = {12, 9, 9, 9, 9, 8, 7};
+  static constexpr int kTagWidths[7] = {0, 8, 8, 9, 10, 10, 11};
+
+  std::uint32_t Fold(int history_length, int fold_width) const;
+  std::uint32_t GetTageIndex(std::uint32_t pc, int table_idx) const;
+  std::uint32_t GetTageTag(std::uint32_t pc, int table_idx) const;
+
   // Statistical Corrector sizing
   static constexpr size_t kScNumTables = 4;
   static constexpr size_t kScTableSize = 512;
