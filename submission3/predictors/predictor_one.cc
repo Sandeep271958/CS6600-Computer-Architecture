@@ -8,6 +8,12 @@ std::string PredictorOne::Name() const { return "PAPER_ONE"; }
 
 std::uint32_t PredictorOne::GetScIndex(size_t table_idx,
                                        std::uint32_t pc) const {
+
+  for (int i = 0; i < 64; ++i) {
+    if (ghr_[i])
+      ghr_lower |= (1ULL << i);
+  }
+
   switch (table_idx) {
   case 0:
     return (pc >> 1) % kScTableSize;
@@ -41,8 +47,20 @@ void PredictorOne::Reset() {
   // Initialize Loop Predictor table
   loop_table_.assign(kLoopTableSize, LoopEntry{false, 0, 0, 0, false, 0, 0});
 
+  // Intitalise BTB and TAGE tables
+  btb_.assign(kBtbSize, BTBEntry{false, 0, 0});
+  base_table_.assign(kBaseSize, BaseEntry{3});
+  t1_.assign(kT1Size, TageEntry{false, 0, 3, 0});
+  t2_.assign(kT2Size, TageEntry{false, 0, 3, 0});
+  t3_.assign(kT3Size, TageEntry{false, 0, 3, 0});
+  t4_.assign(kT4Size, TageEntry{false, 0, 3, 0});
+  t5_.assign(kT5Size, TageEntry{false, 0, 3, 0});
+  t6_.assign(kT6Size, TageEntry{false, 0, 3, 0});
+
+  useful_reset_counter_ = 0;
+
   // Reset history
-  ghr_ = 0;
+  ghr_.reset();
   path_history_ = 0;
 }
 

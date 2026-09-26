@@ -1,6 +1,7 @@
 #pragma once
 
 #include "branch_prediction.h"
+#include <bitset>
 #include <cstdint>
 #include <vector>
 
@@ -30,6 +31,46 @@ private:
     std::uint8_t age;   // eviction age counter
     std::uint8_t confidence_seen; // consecutive matching trip observations
   };
+
+  // BTB and TAGE Structures
+  struct BTBEntry {
+    bool valid = false;
+    std::uint16_t tag = 0;
+    std::uint32_t target = 0;
+  };
+
+  struct BaseEntry {
+    std::uint8_t ctr = 3; // 3 bit counter :- 000-111
+  };
+
+  struct TageEntry {
+    bool valid = false;
+    std::uint16_t tag = 0;
+    std::uint8_t ctr = 3; // 3 bit counter: 0-7
+    std::uint8_t u = 0;   // 2 bit useful counter: 0-3
+  };
+
+  // Table Dimensions from the architectural guide
+  static constexpr size_t kBtbSize = 512;
+  static constexpr size_t kBaseSize = 4096;
+  static constexpr size_t kT1Size = 512;
+  static constexpr size_t kT2Size = 512;
+  static constexpr size_t kT3Size = 512;
+  static constexpr size_t kT4Size = 512;
+  static constexpr size_t kT5Size = 256;
+  static constexpr size_t kT6Size = 128;
+
+  std::vector<BTBEntry> btb_;
+  std::vector<BaseEntry> base_table_;
+
+  // Tagged tables
+  std::vector<TageEntry> t1_;
+  std::vector<TageEntry> t2_;
+  std::vector<TageEntry> t3_;
+  std::vector<TageEntry> t4_;
+  std::vector<TageEntry> t5_;
+  std::vector<TageEntry> t6_;
+  std::uint32_t useful_reset_counter_ = 0;
 
   // Statistical Corrector sizing
   static constexpr size_t kScNumTables = 4;
@@ -61,7 +102,7 @@ private:
   std::vector<LoopEntry> loop_table_;
 
   // History registers
-  std::uint64_t ghr_ = 0;
+  std::bitset<130> ghr_;
   std::uint32_t path_history_ = 0;
 
   // Helpers
