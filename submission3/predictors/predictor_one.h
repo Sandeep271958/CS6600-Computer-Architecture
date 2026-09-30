@@ -84,7 +84,7 @@ private:
   // Statistical Corrector sizing
   static constexpr size_t kScNumTables = 4;
   static constexpr size_t kScTableSize = 512;
-  static constexpr int kScThreshold = 18;
+  static constexpr int kScThreshold = 22;
   // Derived: bit-width of one SC index for metadata packing (log2 of
   // kScTableSize)
   static constexpr int kScIdxBits = (kScTableSize <= 1)      ? 0
@@ -107,7 +107,7 @@ private:
   static constexpr std::uint32_t kLoopTagBits = 13; // PC[15:3]
   static constexpr std::uint8_t kLoopAgeMax = 7;    // 3-bit age counter
   static constexpr std::uint32_t kLoopConfidenceThreshold =
-      3; // need 3 consistent trips
+      4; // need 3 consistent trips
   std::vector<LoopEntry> loop_table_;
 
   // History registers

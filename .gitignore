@@ -10,3 +10,5 @@ CS6600_PA?.md
 git_history.txt
 submission3/test_output.txt
 submission3/build_errors.txt
+submission3/untracked_tests/
+submission3/untracked_scripts/

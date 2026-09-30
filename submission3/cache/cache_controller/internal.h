@@ -501,7 +501,18 @@ public:
     const bool output_drains = OutputWillDrain(response_granted);
     const bool output_has_space = !current_output_.valid || output_drains;
 
-    const bool lookup_can_advance = current_lookup_.valid && output_has_space;
+    bool lookup_can_advance = false;
+    if (current_lookup_.valid && !intent.accept_lower_response) {
+      int granted_writeback = -1;
+      if (lower_request_granted) {
+        const RequestChoice lr_choice = SelectLowerRequest();
+        if (lr_choice.owner == RequestOwner::kWriteback) {
+          granted_writeback = static_cast<int>(lr_choice.entry);
+        }
+      }
+      lookup_can_advance =
+          DecideLookup(output_has_space, granted_writeback).kind != LookupKind::kHold;
+    }
     const bool lookup_is_free = !current_lookup_.valid;
 
     const bool index_can_advance = current_index_.valid && (lookup_is_free || lookup_can_advance);
