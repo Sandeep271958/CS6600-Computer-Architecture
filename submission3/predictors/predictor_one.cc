@@ -95,6 +95,9 @@ void PredictorOne::Reset() {
   t6_.assign(kT6Size, TageEntry{false, 0, 3, 0});
 
   useful_reset_counter_ = 0;
+  use_alt_on_na_ = 8;
+  sc_threshold_ = kScThreshold;
+  sc_tc_ = 0;
 
   // Reset history
   ghr_.reset();
@@ -201,7 +204,7 @@ BranchPrediction PredictorOne::Predict(std::uint32_t pc) {
         alt_ctr = base_table_[indices[0]]
                       .ctr; // If no alt tagged table, fallback to base
 
-      tage_taken = (alt_ctr >= 4);
+      tage_taken = (use_alt_on_na_ >= 8) ? (alt_ctr >= 4) : prov_pred;
     } else {
       tage_taken = prov_pred;
     }
@@ -222,7 +225,7 @@ BranchPrediction PredictorOne::Predict(std::uint32_t pc) {
 
   const bool sc_taken = sc_sum > 0;
   const bool sc_override =
-      std::abs(sc_sum) > kScThreshold && sc_taken != tage_taken;
+      std::abs(sc_sum) > sc_threshold_ && sc_taken != tage_taken;
   const bool tage_or_sc_taken = sc_override ? sc_taken : tage_taken;
 
   // Step 5 - Loop Predictor Lookup
@@ -386,6 +389,27 @@ void PredictorOne::Update(const BranchResult &result,
     else
       prov_entry = &t6_[indices[6]];
 
+    // Dynamic TAGE tuning: update use_alt_on_na_ based on old state
+    if (prov_entry->u == 0 && (prov_entry->ctr == 3 || prov_entry->ctr == 4)) {
+      bool prov_pred = (prov_entry->ctr >= 4);
+      bool alt_pred = false;
+      if (alt_provider == 0) alt_pred = (base_table_[indices[0]].ctr >= 4);
+      else if (alt_provider == 1) alt_pred = (t1_[indices[1]].ctr >= 4);
+      else if (alt_provider == 2) alt_pred = (t2_[indices[2]].ctr >= 4);
+      else if (alt_provider == 3) alt_pred = (t3_[indices[3]].ctr >= 4);
+      else if (alt_provider == 4) alt_pred = (t4_[indices[4]].ctr >= 4);
+      else if (alt_provider == 5) alt_pred = (t5_[indices[5]].ctr >= 4);
+      else alt_pred = (t6_[indices[6]].ctr >= 4);
+
+      if (prov_pred != alt_pred) {
+        if (alt_pred == result.taken) {
+          if (use_alt_on_na_ < 15) use_alt_on_na_++;
+        } else {
+          if (use_alt_on_na_ > 0) use_alt_on_na_--;
+        }
+      }
+    }
+
     // Update counter
     if (result.taken)
       prov_entry->ctr = std::min<std::uint8_t>(prov_entry->ctr + 1, 7);
@@ -439,6 +463,13 @@ void PredictorOne::Update(const BranchResult &result,
 
       if (u_val == 0)
         candidates.push_back(i);
+    }
+
+    if (candidates.empty()) {
+      if ((useful_reset_counter_ & 127) == 0) {
+        // Force allocation randomly to break lockout
+        candidates.push_back(provider + 1);
+      }
     }
 
     if (candidates.empty()) {
@@ -535,6 +566,25 @@ void PredictorOne::Update(const BranchResult &result,
         } else {
           sc_tables_[t][idx] = clamp(sc_tables_[t][idx] - 1, -32, 31);
         }
+      }
+    }
+  }
+
+  // Dynamic SC threshold tuning
+  bool sc_taken = (sc_sum > 0);
+  if (std::abs(sc_sum) >= sc_threshold_ - 2 && std::abs(sc_sum) <= sc_threshold_ + 2) {
+    if (sc_taken != tage_taken) {
+      if (sc_taken == result.taken) {
+        if (sc_tc_ < 31) sc_tc_++;
+      } else {
+        if (sc_tc_ > -32) sc_tc_--;
+      }
+      if (sc_tc_ == 31 && sc_threshold_ > 6) {
+        sc_threshold_--;
+        sc_tc_ = 0;
+      } else if (sc_tc_ == -32 && sc_threshold_ < 30) {
+        sc_threshold_++;
+        sc_tc_ = 0;
       }
     }
   }

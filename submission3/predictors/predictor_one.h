@@ -73,7 +73,7 @@ private:
   std::uint32_t useful_reset_counter_ = 0;
 
   // TAGE configurations
-  static constexpr int kHistoryLengths[7] = {0, 6, 11, 20, 37, 68, 130};
+  static constexpr int kHistoryLengths[7] = {0, 5, 10, 20, 40, 80, 130};
   static constexpr int kIndexWidths[7] = {12, 9, 9, 9, 9, 8, 7};
   static constexpr int kTagWidths[7] = {0, 8, 8, 9, 10, 10, 11};
 
@@ -109,6 +109,11 @@ private:
   static constexpr std::uint32_t kLoopConfidenceThreshold =
       4; // need 3 consistent trips
   std::vector<LoopEntry> loop_table_;
+
+  // Dynamic TAGE and SC tuning
+  std::uint8_t use_alt_on_na_ = 8; // 4-bit counter
+  std::int8_t sc_threshold_ = kScThreshold;
+  std::int8_t sc_tc_ = 0; // SC threshold update counter
 
   // History registers
   std::bitset<130> ghr_;
