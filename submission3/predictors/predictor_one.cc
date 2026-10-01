@@ -72,7 +72,7 @@ std::uint32_t PredictorOne::GetTageTag(std::uint32_t pc, int table_idx) const {
   std::uint32_t csr2 = Fold(kHistoryLengths[table_idx], tag_width - 1);
   std::uint32_t mask = (1u << tag_width) - 1u;
   // Hash formula from the Workload Guide
-  return (pc ^ csr1 ^ (csr2 << 1)) & mask;
+  return (pc ^ csr1 ^ (csr2 << 1) ^ path_history_) & mask;
 }
 
 void PredictorOne::Reset() {
@@ -658,13 +658,13 @@ void PredictorOne::Update(const BranchResult &result,
       entry.age -= 1;
     }
   }
-
   // Step 9 - Update global history registers
   ghr_ <<= 1;
   ghr_.set(0, result.taken);
 
-  path_history_ = (path_history_ << 1) | ((result.pc >> 1) & 1u);
-
+  // Update Path History using the TARGET of the branch (like actual TAGE-SC-L)
+  path_history_ = (path_history_ << 1) ^ (result.target >> 2);
+  path_history_ &= 0xFFFF; // Keep it bounded to 16 bits
   // Update metrics for accuracy tracking
   (void)loop_hit_saved; // captured in metadata; silence unused-variable warning
   if (!prediction.branch_found) {

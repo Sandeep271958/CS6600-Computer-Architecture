@@ -7,8 +7,10 @@ CS6600_PA?.md
 *.o
 *.pdf
 !./report.pdf
-git_history.txt
+git_*.txt
 submission3/test_output.txt
 submission3/build_errors.txt
 submission3/untracked_tests/
 submission3/untracked_scripts/
+submission3/predictors/predictor_dynamic.h
+submission3/predictors/predictor_dynamic.cc

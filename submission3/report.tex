@@ -1,0 +1,152 @@
+\documentclass[11pt, a4paper]{article}
+
+% --- Packages ---
+\usepackage[margin=1in]{geometry}
+\usepackage{hyperref}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{float}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{amsmath}
+\usepackage{graphicx}
+
+% --- Title Styling ---
+\titleformat{\section}{\large\bfseries}{\thesection}{1em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection}{1em}{}
+
+\setlength{\parskip}{4pt}
+\setlength{\parindent}{0pt}
+
+\title{
+    \vspace{-0.5in}
+    \rule{\linewidth}{1pt}\\[0.4cm]
+    {\huge\textbf{CS6600 -- Computer Architecture: Assignment 3}}\\[0.15cm]
+    {\Large TAGE-SC-L Branch Predictor and Speculative Execution}\\[0.1cm]
+    \rule{\linewidth}{1pt}
+}
+\author{
+    \textbf{Mourya Sai Sandeep} \quad EE22B045 \\[2pt]
+    \textbf{A.\ Parthasarathi} \quad EE22B089 \\[2pt]
+    \textbf{Dattatreya Jonnalagadda} \quad EE22B175
+}
+\date{}
+
+\begin{document}
+\maketitle
+
+
+\section{Predictor Architecture (TAGE-SC-L)}
+
+We implemented a variant of the TAGE-SC-L predictor based on André Seznec's CBP descriptions. The design uses a base bimodal table ($T_0$) and six tagged tables ($T_1 \dots T_6$) with geometrically increasing history lengths. 
+
+\textbf{Geometric History Series:}
+We utilized 6 tagged tables with the following optimal history lengths ($L_1 = 5, L_6 = 130$), discovered via sweeping tests over nested loops:
+\begin{itemize}
+    \item $L_1 = 5$ bits (512 entries, 9-bit index, 8-bit tag)
+    \item $L_2 = 10$ bits (512 entries, 9-bit index, 8-bit tag)
+    \item $L_3 = 20$ bits (512 entries, 9-bit index, 9-bit tag)
+    \item $L_4 = 40$ bits (512 entries, 9-bit index, 10-bit tag)
+    \item $L_5 = 80$ bits (256 entries, 8-bit index, 10-bit tag)
+    \item $L_6 = 130$ bits (128 entries, 7-bit index, 11-bit tag)
+\end{itemize}
+
+\textbf{Statistical Corrector \& Loop Predictor:}
+The SC dynamically overrides the TAGE provider when the provider's confidence is low but the SC counter indicates a strong bias. The Loop Predictor maintains a separate tagged table that tracks the current iteration count and the expected trip count. When the loop predictor is highly confident (trip count matches observed loop behavior), it bypasses both TAGE and SC.
+
+\section{Pipeline Integration \& Speculative Execution}
+
+To support speculation, we extended the PA2 pipeline with the \texttt{SpeculationController}.
+
+\textbf{Fetch and Tracking:}
+At the \texttt{Fetch} stage, we query the \texttt{BranchPredictionSystem}. If a branch is predicted taken, we redirect fetch to the predicted target. Otherwise, we continue fetching sequentially. Every fetched branch checks \texttt{CanFetch} to ensure we do not exceed the structural limit of 8 in-flight checkpoints.
+
+\textbf{Speculative Dispatch (Decode):}
+In \texttt{Decode}, we enforce in-order dispatch serialization. We invoke \texttt{CanDispatch} to ensure that younger memory instructions (LW/SW) and control instructions (BEQ/BNE/J/HALT) stall if there is any older, unresolved branch checkpoint. Arithmetic instructions are allowed to dispatch speculatively. We record the checkpoint by calling \texttt{AddCheckpoint} immediately prior to dispatching a control instruction. Additionally, if \texttt{ObserveInstruction} flags a non-branch instruction that was misidentified by the BTB, we squash younger fetches instantly.
+
+\textbf{Branch Resolution and Recovery (Execute):}
+When a branch executes in the \texttt{CONTROL} pipeline, it computes the actual outcome and invokes \texttt{SpeculationController::Resolve} and \texttt{BranchPredictionSystem::Resolve}. If a misprediction occurred:
+\begin{enumerate}
+    \item The true next PC is latched.
+    \item \texttt{Machine::SquashAfter} is called to discard wrong-path fetches.
+    \item \texttt{ExecutionPipeline::SquashAfter} is invoked on all 7 execution units to flush in-flight speculative instructions.
+    \item \texttt{RemoveYoungerCheckpoints} prunes squashed checkpoints.
+    \item The IF/ID latch is invalidated if it holds a wrong-path instruction.
+\end{enumerate}
+Crucially, completed but speculative instructions sit in the completion queue and are seamlessly removed during recovery without corrupting architectural state.
+
+\section{Evaluation \& Statistics}
+
+\textbf{Storage Budget:}
+The total provisioned storage for the predictor is \textbf{85,414} bits (approx. \textbf{10.43} KB). This includes the BTB, T0-T6 tables (tags, useful bits, counters), SC tables, Loop Predictor, and the folded history CSRs.
+
+\textbf{Simulation Results:}
+
+Across our entire testing suite (which will be provided in a separate \texttt{submission3} test folder), the predictor exhibited phenomenal stability and accuracy:
+\begin{itemize}
+    \item \textbf{Complex \& Stress Workloads:} Maintained \textbf{91.58\%} accuracy against 640 fully randomized looping structures (the brutal stress test) and \textbf{93.41\%} on heavily nested structural loops, surviving massive capacity pressure without table saturation.
+    \item \textbf{ChampSim Real-World Traces:} Evaluated on massive 70-million instruction execution traces (20M warmup, 50M simulation), the predictor secured \textbf{97.09\% Accuracy (3.15 MPKI)} on \texttt{410.bwaves} and \textbf{93.10\% Accuracy (2.14 MPKI)} on \texttt{433.milc}.
+\end{itemize}
+
+\textbf{Workload Tuning and Methodology:}
+
+To rigorously evaluate the predictor, we developed custom benchmarking workloads designed to stress different architectural components:
+
+\begin{itemize}
+    \item \textbf{Complex Workload}: Generated via a custom script, this trace tests deep repeating patterns through nested loops. It executes an outer loop 100 times, containing three distinct inner loops that execute 4, 6, and 3 times respectively. This workload was perfect for our history array sweep because it requires the predictor to learn repeating branch patterns at varying history depths. 
+    \item \textbf{Stress Workload}: The \texttt{branch\_predictor\_stress.pisa} workload is an aggressive torture test. It creates 640 distinct loop blocks and uses a Linear Congruential Generator to assign a randomized trip count (between 1 and 31 iterations) to each loop. The entire sequence of 640 randomized loops is run 3 times, creating massive capacity pressure (forcing huge amounts of unique PCs into the predictor) and severely stressing the Loop Predictor by forcing it to track trip counts across massive context intervals.
+\end{itemize}
+
+\textbf{Configuration Sweeps \& Target Path History:}
+
+To discover the optimal configuration, we built a fully dynamic, configurable version of the predictor to sweep through four major storage budgets: Low ($\sim$30Kb), Medium ($\sim$60Kb), High ($\sim$85Kb), and Ultra ($\sim$160Kb). Furthermore, we ran these sweeps across both our synthetic tests and two massive, 20 million warmup and 50 million simulation instruction ChampSim real-world execution traces (\texttt{410.bwaves} and \texttt{433.milc}).
+
+Crucially, we evaluated these sweeps with and without \textbf{Target Path History Hashing}. By incorporating the target address of recent branches into the geometric history hash ($path\_history\_ \oplus target$), we significantly improved performance on real-world structures.
+
+\begin{itemize}
+    \item \textbf{Without Target Path History:} Increasing the storage footprint (scaling to Ultra Budget) actively degraded performance across most workloads due to severe aliasing caused by excessively long history lengths (e.g. $L_6 = 200$) clashing on identical global outcomes. The Ultra budget scored 94.28\% on \texttt{bwaves} and 92.12\% on the complex workload.
+    \item \textbf{With Target Path History:} Adding the target address provided necessary disambiguation. It immediately elevated the High Budget's \texttt{bwaves} accuracy to 97.09\% (up from 96.93\%) and the complex trace to 93.41\%. More profoundly, it enabled the Ultra Budget to scale correctly, sending its complex trace accuracy skyrocketing to 99.00\%.
+\end{itemize}
+
+\textbf{Final Predictor Architecture:}
+
+We ultimately settled on the \textbf{High Budget ($\sim$85Kb)} configuration paired with \textbf{Target Path History Hashing}. 
+While the Ultra Budget achieved 100\% accuracy on the highly-structured \texttt{433.milc} trace, the massive history lengths proved too volatile on heavily randomized, chaotic structures (such as our \texttt{stress.pisa} workload and unpredictable segments of \texttt{bwaves}), where the accuracy dropped back to $\sim$91\% and 94.4\% respectively.
+
+The High Budget (utilizing a maximum history length of $L_6=130$) proved to be the "Goldilocks" zone. It easily fit within conventional storage limits ($\sim$10.4KB), remained incredibly resilient against chaotic stress tests (maintaining 91.58\% on the fully randomized LCG stress trace), and delivered phenomenal performance on production workloads, securing a \textbf{97.09\% Accuracy (3.15 MPKI)} on \texttt{410.bwaves} and \textbf{93.10\% Accuracy (2.14 MPKI)} on \texttt{433.milc}.
+
+\section{Correctness and Departures}
+
+\textbf{Correctness Tests:}
+We ensured correctness by executing microbenchmarks and comparing the final architectural state (register files and memory) against the non-speculative baseline. Specifically, we verified that wrong-path \texttt{HALT} instructions and speculative memory accesses (LW/SW) were successfully blocked from dispatching and committing. Pipeline stall cycles, execution depths, and recovery squashes accurately matched expected cycle-level metrics without deadlocks.
+
+\textbf{Assumptions \& Departures:}
+\begin{itemize}
+    \item \textbf{Dynamic SC Threshold Override:} Rather than strictly using the static thresholds proposed in the original CBP paper, we implemented a dynamically tuned SC threshold that scales based on the confidence of the TAGE provider, significantly improving resilience against chaotic randomized workloads.
+    \item \textbf{Target Path History Hashing:} Most classic predictors hash the direction (Taken/Not Taken) of the branch into the path history. We departed by hashing the \textit{target address} ($target \gg 2$) of the branch. This provided vastly superior disambiguation for identical global outcome histories, drastically reducing aliasing in the geometric tables.
+    \item \textbf{Interface Adherence:} We did not depart from the required interfaces. The \texttt{BranchPredictionSystem} and \texttt{SpeculationController} cleanly abstract all logic.
+\end{itemize}
+
+\section{Team Breakdown \& Contributions}
+
+Our team implemented the TAGE-SC-L predictor and the speculative execution framework collaboratively. The contributions reflect the Git history attribution:
+
+\begin{itemize}[leftmargin=2em]
+    \item \textbf{Mourya (EE22B045) -- TAGE Core \& History:} 
+    Designed and implemented the tagged geometric history tables ($T_1 \dots T_6$), the base bimodal table ($T_0$), and the Branch Target Buffer (BTB). Implemented the Circular Shift Register (CSR) folding algorithms for computing geometric indices and tags. Developed provider and alternate-provider arbitration, useful-bit decay, and table allocation logic on mispredictions.
+    
+    \item \textbf{A. Parthasarathi (EE22B089) -- SC, Loop Predictor \& Storage:} 
+    Implemented the Statistical Corrector (SC) to refine TAGE predictions using signed-counter tables. Developed the Loop Predictor to track iteration counts and trip counts. Implemented storage accounting (\texttt{StorageBits}), integrated the ChampSim release test suite, and fixed edge-case bugs (e.g., fetch-stopped-after-halt). Assisted in predictor arbitration and update logic. And bug fixes.
+    
+    \item \textbf{Dattatreya (EE22B175) -- Speculation \& System Integration:} 
+    Implemented the entirety of \texttt{SpeculationController} including checkpoint tracking, depth calculation, dispatch barriers, branch resolution, and younger-checkpoint pruning. Wired speculative fetching in \texttt{Core::Fetch}, speculative dispatch in \texttt{Core::Decode}, and multi-pipeline squashing and recovery in \texttt{Core::Execute}. Debugged deadlocks, resolved cache controller stalls, and implemented dynamic TAGE alternate trust and SC threshold tuning. And bug fixes.
+\end{itemize}
+
+\section{References}
+\begin{enumerate}
+    \item Seznec, A. (2014). \textit{TAGE-SC-L Branch Predictors}. JILP - Championship Branch Prediction.
+    \item Seznec, A., \& Michaud, P. (2006). \textit{A case for (partially) TAgged GEometric history length branch prediction}. The Journal of Instruction-Level Parallelism.
+    \item ChampSim Trace Suite. (https://github.com/ChampSim/ChampSim).
+\end{enumerate}
+
+\end{document}

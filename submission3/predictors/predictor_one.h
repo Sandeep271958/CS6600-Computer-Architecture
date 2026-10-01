@@ -12,10 +12,8 @@ public:
   std::string Name() const override;
   void Reset() override;
   BranchPrediction Predict(std::uint32_t pc) override;
-  void ObserveInstruction(const Instruction &instruction,
-                          const BranchPrediction &prediction) override;
-  void Update(const BranchResult &result,
-              const BranchPrediction &prediction) override;
+  void ObserveInstruction(const Instruction &instruction, const BranchPrediction &prediction) override;
+  void Update(const BranchResult &result, const BranchPrediction &prediction) override;
   std::uint64_t StorageBits() const override;
   const PredictorMetrics &Metrics() const override;
 
@@ -25,10 +23,10 @@ private:
   struct LoopEntry {
     bool valid;
     std::uint32_t tag;
-    std::uint32_t iter; // taken-branch count within current loop invocation
-    std::uint32_t trip; // learned trip count (exit on iter == trip)
-    bool confidence;    // true once trip count has stabilised
-    std::uint8_t age;   // eviction age counter
+    std::uint32_t iter;           // taken-branch count within current loop invocation
+    std::uint32_t trip;           // learned trip count (exit on iter == trip)
+    bool confidence;              // true once trip count has stabilised
+    std::uint8_t age;             // eviction age counter
     std::uint8_t confidence_seen; // consecutive matching trip observations
   };
 
@@ -104,10 +102,9 @@ private:
 
   // Loop Predictor sizing
   static constexpr size_t kLoopTableSize = 64;
-  static constexpr std::uint32_t kLoopTagBits = 13; // PC[15:3]
-  static constexpr std::uint8_t kLoopAgeMax = 7;    // 3-bit age counter
-  static constexpr std::uint32_t kLoopConfidenceThreshold =
-      4; // need 3 consistent trips
+  static constexpr std::uint32_t kLoopTagBits = 13;            // PC[15:3]
+  static constexpr std::uint8_t kLoopAgeMax = 7;               // 3-bit age counter
+  static constexpr std::uint32_t kLoopConfidenceThreshold = 4; // need 3 consistent trips
   std::vector<LoopEntry> loop_table_;
 
   // Dynamic TAGE and SC tuning
