@@ -228,7 +228,9 @@ public:
     int hit = -1;
     for (std::uint32_t way = 0; way < config_.ways; ++way) {
       const CacheLine &line = current_lines_[address.set][way];
-      if (line.valid && line.tag == address.tag) {
+      // A reserved way has a pending MSHR that will overwrite it — do not
+      // treat it as a hit, as its content is no longer architecturally stable.
+      if (line.valid && !line.reserved && line.tag == address.tag) {
         if (hit >= 0)
           throw std::runtime_error("duplicate tags in one cache set");
         hit = static_cast<int>(way);
@@ -299,6 +301,10 @@ public:
 
   int PeekVictim(std::uint32_t set) const {
     const std::vector<bool> eligible = EligibleWays(set);
+    // If every way is reserved, stall — let the caller handle kReservedWay.
+    if (std::none_of(eligible.begin(), eligible.end(), [](bool e) { return e; })) {
+      return -1;
+    }
     for (std::uint32_t way = 0; way < config_.ways; ++way) {
       if (eligible[way] && !current_lines_[set][way].valid)
         return way;
