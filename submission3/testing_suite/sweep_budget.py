@@ -131,7 +131,7 @@ def main():
             subprocess.run(["make"], cwd=SUBMISSION_DIR, stdout=subprocess.DEVNULL, check=True)
             
             acc_c, bits_c = run_test(cfg['name'], "untracked_tests/complex_workload.pisa", "tests/release_tests/1.json", "Complex")
-            acc_s, bits_s = run_test(cfg['name'], "untracked_scripts/branch_predictor_stress.pisa", "untracked_scripts/branch_predictor_stress.json", "Stress")
+            acc_s, bits_s = run_test(cfg['name'], "testing_suite/branch_predictor_stress.pisa", "testing_suite/branch_predictor_stress.json", "Stress")
             
             print(f"Storage Bits: {bits_s}")
             print(f"Complex Acc:  {acc_c}")

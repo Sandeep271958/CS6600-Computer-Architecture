@@ -9,6 +9,7 @@ namespace pipesim {
 
 class PredictorOne final : public BranchPredictor {
 public:
+  ~PredictorOne();
   std::string Name() const override;
   void Reset() override;
   BranchPrediction Predict(std::uint32_t pc) override;
@@ -113,8 +114,20 @@ private:
   std::int8_t sc_tc_ = 0; // SC threshold update counter
 
   // History registers
-  std::bitset<130> ghr_;
+  std::bitset<300> ghr_;
   std::uint32_t path_history_ = 0;
+
+  // --- Per-component instrumentation counters ---
+  struct ComponentStats {
+    uint64_t selected = 0;   // times this component provided the final prediction
+    uint64_t correct   = 0;  // times that prediction was correct
+    uint64_t reads     = 0;  // table reads (during Predict)
+    uint64_t writes    = 0;  // table writes (during Update)
+  };
+  ComponentStats cs_t0_, cs_t1_, cs_t2_, cs_t3_, cs_t4_, cs_t5_, cs_t6_;
+  ComponentStats cs_sc_;    // SC override selected
+  ComponentStats cs_loop_;  // Loop predictor selected
+  ComponentStats cs_btb_;   // BTB access tracking
 
   // Helpers
   std::uint32_t GetScIndex(size_t table_idx, std::uint32_t pc) const;

@@ -81,7 +81,7 @@ def apply_config(cfg):
         f.write(content)
 
 def build_runner():
-    cmd = ["g++", "-std=c++17", "-O3", "-I.", "untracked_scripts/champsim_runner.cc", "predictors/predictor_one.cc", "-o", "champsim_runner"]
+    cmd = ["g++", "-std=c++17", "-O3", "-I.", "testing_suite/champsim_runner.cc", "predictors/predictor_one.cc", "-o", "champsim_runner"]
     subprocess.run(cmd, cwd=SUBMISSION_DIR, check=True)
 
 def run_test(config_name, trace_file, test_label):

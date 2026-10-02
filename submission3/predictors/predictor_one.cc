@@ -12,6 +12,46 @@ constexpr std::uint64_t kScSumMetadataMask = 0x1FFULL;
 
 } // namespace
 
+PredictorOne::~PredictorOne() {
+  auto pct = [](uint64_t c, uint64_t s) -> std::string {
+    if (s == 0) return "N/A";
+    char buf[32]; snprintf(buf, sizeof(buf), "%.1f%%", 100.0 * c / s);
+    return buf;
+  };
+  fprintf(stderr, "COMPONENT_STATS_BEGIN\n");
+  fprintf(stderr, "T0 selected=%llu correct=%llu acc=%s reads=%llu writes=%llu\n",
+          (unsigned long long)cs_t0_.selected, (unsigned long long)cs_t0_.correct, pct(cs_t0_.correct, cs_t0_.selected).c_str(),
+          (unsigned long long)cs_t0_.reads, (unsigned long long)cs_t0_.writes);
+  fprintf(stderr, "T1 selected=%llu correct=%llu acc=%s reads=%llu writes=%llu\n",
+          (unsigned long long)cs_t1_.selected, (unsigned long long)cs_t1_.correct, pct(cs_t1_.correct, cs_t1_.selected).c_str(),
+          (unsigned long long)cs_t1_.reads, (unsigned long long)cs_t1_.writes);
+  fprintf(stderr, "T2 selected=%llu correct=%llu acc=%s reads=%llu writes=%llu\n",
+          (unsigned long long)cs_t2_.selected, (unsigned long long)cs_t2_.correct, pct(cs_t2_.correct, cs_t2_.selected).c_str(),
+          (unsigned long long)cs_t2_.reads, (unsigned long long)cs_t2_.writes);
+  fprintf(stderr, "T3 selected=%llu correct=%llu acc=%s reads=%llu writes=%llu\n",
+          (unsigned long long)cs_t3_.selected, (unsigned long long)cs_t3_.correct, pct(cs_t3_.correct, cs_t3_.selected).c_str(),
+          (unsigned long long)cs_t3_.reads, (unsigned long long)cs_t3_.writes);
+  fprintf(stderr, "T4 selected=%llu correct=%llu acc=%s reads=%llu writes=%llu\n",
+          (unsigned long long)cs_t4_.selected, (unsigned long long)cs_t4_.correct, pct(cs_t4_.correct, cs_t4_.selected).c_str(),
+          (unsigned long long)cs_t4_.reads, (unsigned long long)cs_t4_.writes);
+  fprintf(stderr, "T5 selected=%llu correct=%llu acc=%s reads=%llu writes=%llu\n",
+          (unsigned long long)cs_t5_.selected, (unsigned long long)cs_t5_.correct, pct(cs_t5_.correct, cs_t5_.selected).c_str(),
+          (unsigned long long)cs_t5_.reads, (unsigned long long)cs_t5_.writes);
+  fprintf(stderr, "T6 selected=%llu correct=%llu acc=%s reads=%llu writes=%llu\n",
+          (unsigned long long)cs_t6_.selected, (unsigned long long)cs_t6_.correct, pct(cs_t6_.correct, cs_t6_.selected).c_str(),
+          (unsigned long long)cs_t6_.reads, (unsigned long long)cs_t6_.writes);
+  fprintf(stderr, "SC selected=%llu correct=%llu acc=%s reads=%llu writes=%llu\n",
+          (unsigned long long)cs_sc_.selected, (unsigned long long)cs_sc_.correct, pct(cs_sc_.correct, cs_sc_.selected).c_str(),
+          (unsigned long long)cs_sc_.reads, (unsigned long long)cs_sc_.writes);
+  fprintf(stderr, "BTB selected=%llu correct=%llu acc=%s reads=%llu writes=%llu\n",
+          (unsigned long long)cs_btb_.selected, (unsigned long long)cs_btb_.correct, pct(cs_btb_.correct, cs_btb_.selected).c_str(),
+          (unsigned long long)cs_btb_.reads, (unsigned long long)cs_btb_.writes);
+  fprintf(stderr, "Loop selected=%llu correct=%llu acc=%s reads=%llu writes=%llu\n",
+          (unsigned long long)cs_loop_.selected, (unsigned long long)cs_loop_.correct, pct(cs_loop_.correct, cs_loop_.selected).c_str(),
+          (unsigned long long)cs_loop_.reads, (unsigned long long)cs_loop_.writes);
+  fprintf(stderr, "COMPONENT_STATS_END\n");
+}
+
 std::string PredictorOne::Name() const { return "PAPER_ONE"; }
 
 std::uint32_t PredictorOne::GetScIndex(size_t table_idx,
@@ -99,6 +139,10 @@ void PredictorOne::Reset() {
   sc_threshold_ = kScThreshold;
   sc_tc_ = 0;
 
+  // Reset per-component instrumentation counters
+  cs_t0_ = cs_t1_ = cs_t2_ = cs_t3_ = cs_t4_ = cs_t5_ = cs_t6_ = {};
+  cs_sc_ = cs_loop_ = {};
+
   // Reset history
   ghr_.reset();
   path_history_ = 0;
@@ -145,6 +189,15 @@ BranchPrediction PredictorOne::Predict(std::uint32_t pc) {
     else if (i == 6)
       hit[i] = t6_[indices[i]].valid && (t6_[indices[i]].tag == tags[i]);
   }
+
+  // --- Account reads for this prediction ---
+  // BTB: 1 read. T0: 1 read. T1-T6: 1 read each. SC: kScNumTables reads. Loop: 1 read.
+  cs_btb_.reads++;
+  cs_t0_.reads++;
+  cs_t1_.reads++; cs_t2_.reads++; cs_t3_.reads++;
+  cs_t4_.reads++; cs_t5_.reads++; cs_t6_.reads++;
+  cs_sc_.reads += kScNumTables;
+  cs_loop_.reads++;
 
   // Find provider (longest hit) and alt_provider (second longest hit)
   for (int i = 6; i >= 1; --i) {
@@ -280,6 +333,19 @@ BranchPrediction PredictorOne::Predict(std::uint32_t pc) {
 
   prediction.information = metadata;
 
+  // Pack which component provided the final prediction into bits 60-63:
+  // 0=T0, 1..6=T1..T6, 7=SC override, 8=Loop
+  uint64_t comp_id = 0;
+  if (loop_hit) {
+    comp_id = 8;
+  } else if (sc_override) {
+    comp_id = 7;
+  } else {
+    comp_id = static_cast<uint64_t>(provider); // 0 = T0, 1-6 = T1-T6
+  }
+  metadata |= (comp_id & 0xFULL) << 60;
+  prediction.information = metadata;
+
   if (branch_found) {
     ++metrics_.branches_found;
     if (final_taken_with_loop)
@@ -365,6 +431,7 @@ void PredictorOne::Update(const BranchResult &result,
     btb_[btb_idx].valid = true;
     btb_[btb_idx].tag = (pc >> 11) & 0x3FFF;
     btb_[btb_idx].target = result.target;
+    cs_btb_.writes++;
   }
 
   // Step 2 & 3: Provider Counter & Useful Bit Update
@@ -442,6 +509,21 @@ void PredictorOne::Update(const BranchResult &result,
         prov_entry->u--;
     }
   }
+
+  // --- Account writes for this update ---
+  // Base (T0): always written. Provider tagged table: 1 write if provider > 0.
+  // SC: conditionally written (kScNumTables writes). Loop: always 1 write.
+  // BTB: 1 write if taken.
+  cs_t0_.writes += (provider == 0) ? 1 : 0;
+  if (provider == 1) cs_t1_.writes++;
+  else if (provider == 2) cs_t2_.writes++;
+  else if (provider == 3) cs_t3_.writes++;
+  else if (provider == 4) cs_t4_.writes++;
+  else if (provider == 5) cs_t5_.writes++;
+  else if (provider == 6) cs_t6_.writes++;
+  if (sc_override || std::abs(sc_sum) < kScThreshold || tage_mispredicted)
+    cs_sc_.writes += kScNumTables;
+  cs_loop_.writes++;
 
   // Step 4: Allocation on Misprediction
   if (tage_mispredicted && provider < 6) {
@@ -679,6 +761,30 @@ void PredictorOne::Update(const BranchResult &result,
       }
     } else {
       ++metrics_.direction_mispredictions;
+    }
+  }
+
+  // --- Per-component accuracy tracking ---
+  {
+    uint64_t comp_id = (metadata >> 60) & 0xF;
+    bool correct = (prediction.branch_found && (prediction.taken == result.taken) &&
+                    !(prediction.taken && result.taken && prediction.target != result.target));
+    ComponentStats *cs = nullptr;
+    switch (comp_id) {
+      case 0: cs = &cs_t0_; break;
+      case 1: cs = &cs_t1_; break;
+      case 2: cs = &cs_t2_; break;
+      case 3: cs = &cs_t3_; break;
+      case 4: cs = &cs_t4_; break;
+      case 5: cs = &cs_t5_; break;
+      case 6: cs = &cs_t6_; break;
+      case 7: cs = &cs_sc_; break;
+      case 8: cs = &cs_loop_; break;
+      default: break;
+    }
+    if (cs && prediction.branch_found) {
+      ++cs->selected;
+      if (correct) ++cs->correct;
     }
   }
 }

@@ -6,7 +6,7 @@ CS6600_PA?.md
 *.tex
 *.o
 *.pdf
-!./report.pdf
+!report.pdf
 git_*.txt
 submission3/test_output.txt
 submission3/build_errors.txt

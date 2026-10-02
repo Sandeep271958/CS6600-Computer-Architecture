@@ -44,8 +44,8 @@ pisa_content = "PIPEISA 1\nENTRY 0x00000000\n"
 pisa_content += '\n'.join(instructions)
 pisa_content += '\nEND\n'
 
-os.makedirs('submission3/untracked_tests', exist_ok=True)
-with open('submission3/untracked_tests/complex_workload.pisa', 'w') as f:
+os.makedirs('untracked_tests', exist_ok=True)
+with open('untracked_tests/complex_workload.pisa', 'w') as f:
     f.write(pisa_content)
 
 print('Generated complex_workload.pisa')
