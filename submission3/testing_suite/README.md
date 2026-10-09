@@ -2,6 +2,12 @@
 
 This directory contains the custom testing suite developed to rigorously evaluate the TAGE-SC-L predictor. It includes workload generators, automated configuration sweep scripts, and a standalone ChampSim trace runner for processing massive real-world instruction traces.
 
+The ten supplied `tests/release_tests` programs contain no branch instructions;
+they are retained as PA2 regression tests. PA3 correctness is additionally
+covered by `tests/false_branch_alias.pisa`,
+`tests/speculative_arithmetic.pisa`, the example direction-recovery test, and
+the metric-identity checker invoked by `make test`.
+
 ## 1. Workload Generation
 
 The standard provided `.pisa` tests were too simple to adequately evaluate the Geometric History Lengths or the Loop Predictor. We wrote two custom assembly generators:

@@ -19,6 +19,35 @@ sed -n '/BEGIN STATE/,/END STATE/p' "$test_tmp/example.out" \
   > "$test_tmp/example.state"
 cmp tests/expected_example_state.txt "$test_tmp/example.state"
 grep -Fx 'CYCLES 71' "$test_tmp/example.out" >/dev/null
+python3 tests/check_branch_metrics.py "$test_tmp/example.out"
+grep -Fx 'predictor0.storage_bits 87861' "$test_tmp/example.out" >/dev/null
+
+# Force a BTB tag/index alias between two distant PCs.  The aliased ordinary
+# instruction must be redirected to sequential execution but must not be
+# dropped from the pipeline.
+printf 'n 1000\np\ns\nq\n' | \
+  ./pipesim tests/false_branch_alias.pisa tests/false_branch_alias.json 0 \
+  > "$test_tmp/false_branch.out"
+sed -n '/BEGIN STATE/,/END STATE/p' "$test_tmp/false_branch.out" \
+  > "$test_tmp/false_branch.state"
+cmp tests/false_branch_alias.expected.txt "$test_tmp/false_branch.state"
+grep -E '^branch.false_branch_redirects [1-9][0-9]*$' \
+  "$test_tmp/false_branch.out" >/dev/null
+python3 tests/check_branch_metrics.py "$test_tmp/false_branch.out"
+
+# A long-latency branch permits younger arithmetic to dispatch and complete.
+# Recovery must remove those completions without allowing architectural writes.
+printf 'n 1000\np\ns\nq\n' | \
+  ./pipesim tests/speculative_arithmetic.pisa \
+  tests/speculative_arithmetic.json 0 > "$test_tmp/speculative.out"
+sed -n '/BEGIN STATE/,/END STATE/p' "$test_tmp/speculative.out" \
+  > "$test_tmp/speculative.state"
+cmp tests/speculative_arithmetic.expected.txt "$test_tmp/speculative.state"
+grep -E '^branch.speculative_instructions_dispatched [1-9][0-9]*$' \
+  "$test_tmp/speculative.out" >/dev/null
+grep -E '^branch.squashed_completions [1-9][0-9]*$' \
+  "$test_tmp/speculative.out" >/dev/null
+python3 tests/check_branch_metrics.py "$test_tmp/speculative.out"
 
 printf 'n 2000\np\ns\nq\n' | ./pipesim tests/eviction.pisa default_config.json 0 \
   > "$test_tmp/eviction.out"

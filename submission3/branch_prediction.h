@@ -87,6 +87,7 @@ class BranchPredictionSystem final : public TrackedUnit {
                const BranchPredictionSet& predictions);
   void RecordSpeculativeFetch(std::uint64_t depth);
   void RecordSpeculativeDispatch();
+  void RecordSpeculationDepth(std::uint64_t depth);
   void RecordSquash(std::uint64_t fetches,
                     std::uint64_t pipeline_operations,
                     std::uint64_t completions,

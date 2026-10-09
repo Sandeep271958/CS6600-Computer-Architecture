@@ -114,7 +114,7 @@ private:
   std::int8_t sc_tc_ = 0; // SC threshold update counter
 
   // History registers
-  std::bitset<300> ghr_;
+  std::bitset<130> ghr_;
   std::uint32_t path_history_ = 0;
 
   // --- Per-component instrumentation counters ---

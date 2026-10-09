@@ -17,6 +17,7 @@ struct FrontendLatch {
   FetchedInstruction fetched;
   bool decoded = false;
   bool control_recognized = false;
+  bool prediction_observed = false;
   DecodeResult decode;
 };
 
@@ -74,6 +75,7 @@ class Core {
   std::array<bool, 7> consume_output_ = {};
   bool if_id_consumed_ = false;
   bool control_recognized_this_cycle_ = false;
+  bool recovery_recorded_this_cycle_ = false;
   bool pipelines_operated_ = false;
   bool cycle_begun_ = false;
   StageSnapshot snapshots_[5];

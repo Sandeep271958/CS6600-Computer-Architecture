@@ -19,7 +19,10 @@ def run_release_tests():
             print(f"Test {i}: MISSING")
             continue
 
-        exe = "./pipesim" if os.path.exists("./pipesim") else ".\\pipesim.exe"
+        if os.name == "nt" and os.path.exists(".\\pipesim.exe"):
+            exe = ".\\pipesim.exe"
+        else:
+            exe = "./pipesim"
         proc = subprocess.run(
             [exe, pisa_file, json_file, "0"],
             input="n 500000\np\ns\nq\n",

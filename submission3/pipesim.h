@@ -60,6 +60,14 @@ struct BranchPrediction {
   std::uint32_t target = 0;
   std::uint32_t confidence = 0;
   std::uint64_t information = 0;
+
+  // Prediction-time TAGE context.  The global/path histories can change
+  // before this dynamic branch resolves, so Update must not recompute these
+  // indices or the provider from newer predictor state.
+  std::uint64_t tage_indices = 0;
+  std::uint64_t tage_tags = 0;
+  // provider[2:0], alternate[5:3], provider direction[6], alternate[7]
+  std::uint8_t tage_provider_context = 0;
 };
 
 struct BranchPredictionSet {

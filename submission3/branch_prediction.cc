@@ -130,6 +130,11 @@ void BranchPredictionSystem::RecordSpeculativeDispatch() {
   Increase(&impl_->metrics.speculative_instructions_dispatched);
 }
 
+void BranchPredictionSystem::RecordSpeculationDepth(std::uint64_t depth) {
+  impl_->metrics.maximum_speculation_depth =
+      std::max(impl_->metrics.maximum_speculation_depth, depth);
+}
+
 void BranchPredictionSystem::RecordSquash(
     std::uint64_t fetches,
     std::uint64_t pipeline_operations,

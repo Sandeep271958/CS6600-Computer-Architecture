@@ -36,6 +36,8 @@ bool SpeculationController::CanDispatch(std::uint64_t sequence, const Instructio
 }
 
 void SpeculationController::AddCheckpoint(const BranchCheckpoint &checkpoint) {
+  if (impl_->checkpoints.size() >= impl_->maximum_checkpoints)
+    throw std::runtime_error("speculation checkpoint capacity exceeded");
   // Ensures that dispatch is In-Order
   assert(impl_->checkpoints.empty() || impl_->checkpoints.back().sequence < checkpoint.sequence);
   impl_->checkpoints.push_back(checkpoint);

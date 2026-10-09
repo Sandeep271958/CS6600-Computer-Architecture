@@ -141,7 +141,7 @@ void PredictorOne::Reset() {
 
   // Reset per-component instrumentation counters
   cs_t0_ = cs_t1_ = cs_t2_ = cs_t3_ = cs_t4_ = cs_t5_ = cs_t6_ = {};
-  cs_sc_ = cs_loop_ = {};
+  cs_sc_ = cs_loop_ = cs_btb_ = {};
 
   // Reset history
   ghr_.reset();
@@ -213,6 +213,8 @@ BranchPrediction PredictorOne::Predict(std::uint32_t pc) {
 
   // --- Step 4 & 5: Provider Selection ---
   bool tage_taken = base_taken;
+  bool provider_taken = base_taken;
+  bool alternate_taken = base_taken;
 
   if (provider > 0) {
     // Get the counter and useful bit of the provider
@@ -238,26 +240,29 @@ BranchPrediction PredictorOne::Predict(std::uint32_t pc) {
     }
 
     bool prov_pred = (prov_ctr >= 4);
+    provider_taken = prov_pred;
     bool prov_is_weak = (prov_ctr == 3 || prov_ctr == 4);
 
-    // If newly allocated (u == 0) and weak, we might use alt_provider instead
-    if (prov_u == 0 && prov_is_weak && alt_provider > 0) {
-      std::uint8_t alt_ctr;
-      if (alt_provider == 1)
-        alt_ctr = t1_[indices[1]].ctr;
-      else if (alt_provider == 2)
-        alt_ctr = t2_[indices[2]].ctr;
-      else if (alt_provider == 3)
-        alt_ctr = t3_[indices[3]].ctr;
-      else if (alt_provider == 4)
-        alt_ctr = t4_[indices[4]].ctr;
-      else if (alt_provider == 5)
-        alt_ctr = t5_[indices[5]].ctr;
-      else
-        alt_ctr = base_table_[indices[0]]
-                      .ctr; // If no alt tagged table, fallback to base
+    std::uint8_t alt_ctr = base_table_[indices[0]].ctr;
+    if (alt_provider == 1)
+      alt_ctr = t1_[indices[1]].ctr;
+    else if (alt_provider == 2)
+      alt_ctr = t2_[indices[2]].ctr;
+    else if (alt_provider == 3)
+      alt_ctr = t3_[indices[3]].ctr;
+    else if (alt_provider == 4)
+      alt_ctr = t4_[indices[4]].ctr;
+    else if (alt_provider == 5)
+      alt_ctr = t5_[indices[5]].ctr;
+    else if (alt_provider == 6)
+      alt_ctr = t6_[indices[6]].ctr;
+    alternate_taken = (alt_ctr >= 4);
 
-      tage_taken = (use_alt_on_na_ >= 8) ? (alt_ctr >= 4) : prov_pred;
+    // For a weak, newly allocated provider, the alternate is the next tagged
+    // hit or T0 when no second tagged table hit.  T0 is a real alternate, not
+    // a sentinel meaning "no alternate".
+    if (prov_u == 0 && prov_is_weak) {
+      tage_taken = (use_alt_on_na_ >= 8) ? alternate_taken : prov_pred;
     } else {
       tage_taken = prov_pred;
     }
@@ -305,6 +310,25 @@ BranchPrediction PredictorOne::Predict(std::uint32_t pc) {
   prediction.taken = final_taken_with_loop;
   prediction.target = target;
   prediction.confidence = static_cast<std::uint32_t>(std::abs(sc_sum));
+  unsigned index_shift = 0;
+  for (int i = 0; i <= 6; ++i) {
+    const std::uint64_t mask = (1ULL << kIndexWidths[i]) - 1ULL;
+    prediction.tage_indices |=
+        (static_cast<std::uint64_t>(indices[i]) & mask) << index_shift;
+    index_shift += static_cast<unsigned>(kIndexWidths[i]);
+  }
+  unsigned tag_shift = 0;
+  for (int i = 1; i <= 6; ++i) {
+    const std::uint64_t mask = (1ULL << kTagWidths[i]) - 1ULL;
+    prediction.tage_tags |=
+        (static_cast<std::uint64_t>(tags[i]) & mask) << tag_shift;
+    tag_shift += static_cast<unsigned>(kTagWidths[i]);
+  }
+  prediction.tage_provider_context =
+      static_cast<std::uint8_t>(provider & 0x7) |
+      static_cast<std::uint8_t>((alt_provider & 0x7) << 3) |
+      static_cast<std::uint8_t>(provider_taken ? 0x40 : 0) |
+      static_cast<std::uint8_t>(alternate_taken ? 0x80 : 0);
 
   // Pack metadata into information field for Update()
   std::uint64_t metadata = 0;
@@ -369,6 +393,14 @@ void PredictorOne::ObserveInstruction(const Instruction &instruction,
 
   if (prediction.branch_found && !actual_branch) {
     ++metrics_.false_branch_predictions;
+    const std::uint32_t btb_idx =
+        (instruction.pc >> 2) % static_cast<std::uint32_t>(kBtbSize);
+    const std::uint16_t btb_tag =
+        static_cast<std::uint16_t>((instruction.pc >> 11) & 0x3FFF);
+    if (btb_[btb_idx].valid && btb_[btb_idx].tag == btb_tag) {
+      btb_[btb_idx].valid = false;
+      ++cs_btb_.writes;
+    }
   }
 
   else if (!prediction.branch_found && actual_branch) {
@@ -393,46 +425,31 @@ void PredictorOne::Update(const BranchResult &result,
   // --- TAGE UPDATE LOGIC (Step 1 to 5) ---
   std::uint32_t pc = result.pc;
 
-  // Recompute indices for the tables
+  // Use the indices and provider captured at prediction time.  Recomputing
+  // them here would use newer global/path history if an older branch resolved
+  // in the meantime and could train an entry that did not make the prediction.
   std::uint32_t indices[7];
-  indices[0] = (pc >> 2) % kBaseSize;
-  for (int i = 1; i <= 6; ++i) {
-    indices[i] = GetTageIndex(pc, i);
+  unsigned index_shift = 0;
+  for (int i = 0; i <= 6; ++i) {
+    const std::uint64_t mask = (1ULL << kIndexWidths[i]) - 1ULL;
+    indices[i] = static_cast<std::uint32_t>(
+        (prediction.tage_indices >> index_shift) & mask);
+    index_shift += static_cast<unsigned>(kIndexWidths[i]);
   }
+  const int provider = prediction.tage_provider_context & 0x7;
+  const int alt_provider = (prediction.tage_provider_context >> 3) & 0x7;
+  const bool provider_taken_saved =
+      (prediction.tage_provider_context & 0x40) != 0;
+  const bool alternate_taken_saved =
+      (prediction.tage_provider_context & 0x80) != 0;
 
-  // Recompute provider and alt_provider because metadata bits 50+ are used by SC
-  int provider = 0;
-  int alt_provider = 0;
-  bool hit[7] = {false};
-  std::uint32_t tags[7] = {0};
-  for (int i = 1; i <= 6; ++i) {
-    tags[i] = GetTageTag(pc, i);
-    if (i == 1) hit[i] = t1_[indices[i]].valid && (t1_[indices[i]].tag == tags[i]);
-    else if (i == 2) hit[i] = t2_[indices[2]].valid && (t2_[indices[2]].tag == tags[i]);
-    else if (i == 3) hit[i] = t3_[indices[3]].valid && (t3_[indices[3]].tag == tags[i]);
-    else if (i == 4) hit[i] = t4_[indices[4]].valid && (t4_[indices[4]].tag == tags[i]);
-    else if (i == 5) hit[i] = t5_[indices[5]].valid && (t5_[indices[5]].tag == tags[i]);
-    else if (i == 6) hit[i] = t6_[indices[6]].valid && (t6_[indices[6]].tag == tags[i]);
-  }
-  for (int i = 6; i >= 1; --i) {
-    if (hit[i]) {
-      if (provider == 0) {
-        provider = i;
-      } else if (alt_provider == 0) {
-        alt_provider = i;
-        break;
-      }
-    }
-  }
-
-  // Step 1: BTB Update
-  if (result.taken) {
-    std::uint32_t btb_idx = (pc >> 2) % kBtbSize;
-    btb_[btb_idx].valid = true;
-    btb_[btb_idx].tag = (pc >> 11) & 0x3FFF;
-    btb_[btb_idx].target = result.target;
-    cs_btb_.writes++;
-  }
+  // Step 1: BTB Update.  Learn branch identity even when this particular
+  // execution is not taken; the control unit still supplies the static target.
+  std::uint32_t btb_idx = (pc >> 2) % kBtbSize;
+  btb_[btb_idx].valid = true;
+  btb_[btb_idx].tag = (pc >> 11) & 0x3FFF;
+  btb_[btb_idx].target = result.target;
+  cs_btb_.writes++;
 
   // Step 2 & 3: Provider Counter & Useful Bit Update
   if (provider == 0) {
@@ -458,15 +475,8 @@ void PredictorOne::Update(const BranchResult &result,
 
     // Dynamic TAGE tuning: update use_alt_on_na_ based on old state
     if (prov_entry->u == 0 && (prov_entry->ctr == 3 || prov_entry->ctr == 4)) {
-      bool prov_pred = (prov_entry->ctr >= 4);
-      bool alt_pred = false;
-      if (alt_provider == 0) alt_pred = (base_table_[indices[0]].ctr >= 4);
-      else if (alt_provider == 1) alt_pred = (t1_[indices[1]].ctr >= 4);
-      else if (alt_provider == 2) alt_pred = (t2_[indices[2]].ctr >= 4);
-      else if (alt_provider == 3) alt_pred = (t3_[indices[3]].ctr >= 4);
-      else if (alt_provider == 4) alt_pred = (t4_[indices[4]].ctr >= 4);
-      else if (alt_provider == 5) alt_pred = (t5_[indices[5]].ctr >= 4);
-      else alt_pred = (t6_[indices[6]].ctr >= 4);
+      const bool prov_pred = provider_taken_saved;
+      const bool alt_pred = alternate_taken_saved;
 
       if (prov_pred != alt_pred) {
         if (alt_pred == result.taken) {
@@ -485,22 +495,9 @@ void PredictorOne::Update(const BranchResult &result,
 
     // Update useful bit
     if (alt_provider != provider) {
-      bool prov_correct = (tage_taken == result.taken);
-      bool alt_pred = false;
-      if (alt_provider == 0)
-        alt_pred = (base_table_[indices[0]].ctr >= 4);
-      else if (alt_provider == 1)
-        alt_pred = (t1_[indices[1]].ctr >= 4);
-      else if (alt_provider == 2)
-        alt_pred = (t2_[indices[2]].ctr >= 4);
-      else if (alt_provider == 3)
-        alt_pred = (t3_[indices[3]].ctr >= 4);
-      else if (alt_provider == 4)
-        alt_pred = (t4_[indices[4]].ctr >= 4);
-      else if (alt_provider == 5)
-        alt_pred = (t5_[indices[5]].ctr >= 4);
-      else
-        alt_pred = (t6_[indices[6]].ctr >= 4);
+      const bool prov_correct =
+          (provider_taken_saved == result.taken);
+      const bool alt_pred = alternate_taken_saved;
 
       bool alt_correct = (alt_pred == result.taken);
       if (prov_correct && !alt_correct)
@@ -511,9 +508,10 @@ void PredictorOne::Update(const BranchResult &result,
   }
 
   // --- Account writes for this update ---
-  // Base (T0): always written. Provider tagged table: 1 write if provider > 0.
+  // T0 is written when it is the provider.  A tagged provider is written once
+  // here; allocation/decay writes are accounted below.
   // SC: conditionally written (kScNumTables writes). Loop: always 1 write.
-  // BTB: 1 write if taken.
+  // BTB: 1 write for every resolved branch.
   cs_t0_.writes += (provider == 0) ? 1 : 0;
   if (provider == 1) cs_t1_.writes++;
   else if (provider == 2) cs_t2_.writes++;
@@ -521,7 +519,7 @@ void PredictorOne::Update(const BranchResult &result,
   else if (provider == 4) cs_t4_.writes++;
   else if (provider == 5) cs_t5_.writes++;
   else if (provider == 6) cs_t6_.writes++;
-  if (sc_override || std::abs(sc_sum) < kScThreshold || tage_mispredicted)
+  if (sc_override || std::abs(sc_sum) < sc_threshold_ || tage_mispredicted)
     cs_sc_.writes += kScNumTables;
   cs_loop_.writes++;
 
@@ -557,18 +555,25 @@ void PredictorOne::Update(const BranchResult &result,
     if (candidates.empty()) {
       // Graceful decay: decrement u bits across candidate tables
       for (int i = provider + 1; i <= 6; ++i) {
-        if (i == 1 && t1_[indices[1]].u > 0)
+        if (i == 1 && t1_[indices[1]].u > 0) {
           t1_[indices[1]].u--;
-        else if (i == 2 && t2_[indices[2]].u > 0)
+          cs_t1_.writes++;
+        } else if (i == 2 && t2_[indices[2]].u > 0) {
           t2_[indices[2]].u--;
-        else if (i == 3 && t3_[indices[3]].u > 0)
+          cs_t2_.writes++;
+        } else if (i == 3 && t3_[indices[3]].u > 0) {
           t3_[indices[3]].u--;
-        else if (i == 4 && t4_[indices[4]].u > 0)
+          cs_t3_.writes++;
+        } else if (i == 4 && t4_[indices[4]].u > 0) {
           t4_[indices[4]].u--;
-        else if (i == 5 && t5_[indices[5]].u > 0)
+          cs_t4_.writes++;
+        } else if (i == 5 && t5_[indices[5]].u > 0) {
           t5_[indices[5]].u--;
-        else if (i == 6 && t6_[indices[6]].u > 0)
+          cs_t5_.writes++;
+        } else if (i == 6 && t6_[indices[6]].u > 0) {
           t6_[indices[6]].u--;
+          cs_t6_.writes++;
+        }
       }
     } else {
       // Pick the longest history candidate to allocate
@@ -588,9 +593,21 @@ void PredictorOne::Update(const BranchResult &result,
         chosen_entry = &t6_[indices[6]];
 
       chosen_entry->valid = true;
-      chosen_entry->tag = GetTageTag(pc, chosen);
+      unsigned tag_shift = 0;
+      for (int i = 1; i < chosen; ++i)
+        tag_shift += static_cast<unsigned>(kTagWidths[i]);
+      const std::uint64_t tag_mask =
+          (1ULL << kTagWidths[chosen]) - 1ULL;
+      chosen_entry->tag = static_cast<std::uint16_t>(
+          (prediction.tage_tags >> tag_shift) & tag_mask);
       chosen_entry->ctr = result.taken ? 4 : 3; // Weakly taken or not-taken
       chosen_entry->u = 0;
+      if (chosen == 1) cs_t1_.writes++;
+      else if (chosen == 2) cs_t2_.writes++;
+      else if (chosen == 3) cs_t3_.writes++;
+      else if (chosen == 4) cs_t4_.writes++;
+      else if (chosen == 5) cs_t5_.writes++;
+      else if (chosen == 6) cs_t6_.writes++;
     }
   }
 
@@ -609,6 +626,12 @@ void PredictorOne::Update(const BranchResult &result,
       e.u &= 0b01;
     for (auto &e : t6_)
       e.u &= 0b01;
+    cs_t1_.writes += kT1Size;
+    cs_t2_.writes += kT2Size;
+    cs_t3_.writes += kT3Size;
+    cs_t4_.writes += kT4Size;
+    cs_t5_.writes += kT5Size;
+    cs_t6_.writes += kT6Size;
   } else if (useful_reset_counter_ == 512 * 1024) {
     for (auto &e : t1_)
       e.u &= 0b10;
@@ -622,6 +645,12 @@ void PredictorOne::Update(const BranchResult &result,
       e.u &= 0b10;
     for (auto &e : t6_)
       e.u &= 0b10;
+    cs_t1_.writes += kT1Size;
+    cs_t2_.writes += kT2Size;
+    cs_t3_.writes += kT3Size;
+    cs_t4_.writes += kT4Size;
+    cs_t5_.writes += kT5Size;
+    cs_t6_.writes += kT6Size;
     useful_reset_counter_ = 0;
   }
   // ---------------------------------------
@@ -629,7 +658,7 @@ void PredictorOne::Update(const BranchResult &result,
   // Step 7 - SC Update
   // Train SC if TAGE mispredicted, or if SC override was within threshold
   // margin, or if SC overrode
-  if (sc_override || std::abs(sc_sum) < kScThreshold || tage_mispredicted) {
+  if (sc_override || std::abs(sc_sum) < sc_threshold_ || tage_mispredicted) {
     if (!sc_tables_.empty()) {
       auto clamp = [](int8_t val, int min_val, int max_val) -> int8_t {
         if (val < min_val)
@@ -749,19 +778,13 @@ void PredictorOne::Update(const BranchResult &result,
   path_history_ &= 0xFFFF; // Keep it bounded to 16 bits
   // Update metrics for accuracy tracking
   (void)loop_hit_saved; // captured in metadata; silence unused-variable warning
-  if (!prediction.branch_found) {
-    ++metrics_.missed_branches;
+  const bool predicted_taken = prediction.branch_found && prediction.taken;
+  if (predicted_taken != result.taken) {
+    ++metrics_.direction_mispredictions;
+  } else if (result.taken && prediction.target != result.target) {
+    ++metrics_.target_mispredictions;
   } else {
-    bool final_pred = (prediction.branch_found && prediction.taken);
-    if (final_pred == result.taken) {
-      if (result.taken && prediction.target != result.target) {
-        ++metrics_.target_mispredictions;
-      } else {
-        ++metrics_.correct_predictions;
-      }
-    } else {
-      ++metrics_.direction_mispredictions;
-    }
+    ++metrics_.correct_predictions;
   }
 
   // --- Per-component accuracy tracking ---
@@ -810,13 +833,13 @@ std::uint64_t PredictorOne::StorageBits() const {
   // Base Predictor: 3-bit counter
   const std::uint64_t base_bits = kBaseSize * 3;
 
-  // Tagged tables: ctr (3) + u (2) + specific tag width
-  const std::uint64_t t1_bits = kT1Size * (3 + 2 + kTagWidths[1]);
-  const std::uint64_t t2_bits = kT2Size * (3 + 2 + kTagWidths[2]);
-  const std::uint64_t t3_bits = kT3Size * (3 + 2 + kTagWidths[3]);
-  const std::uint64_t t4_bits = kT4Size * (3 + 2 + kTagWidths[4]);
-  const std::uint64_t t5_bits = kT5Size * (3 + 2 + kTagWidths[5]);
-  const std::uint64_t t6_bits = kT6Size * (3 + 2 + kTagWidths[6]);
+  // Tagged tables: valid (1) + ctr (3) + u (2) + tag.
+  const std::uint64_t t1_bits = kT1Size * (1 + 3 + 2 + kTagWidths[1]);
+  const std::uint64_t t2_bits = kT2Size * (1 + 3 + 2 + kTagWidths[2]);
+  const std::uint64_t t3_bits = kT3Size * (1 + 3 + 2 + kTagWidths[3]);
+  const std::uint64_t t4_bits = kT4Size * (1 + 3 + 2 + kTagWidths[4]);
+  const std::uint64_t t5_bits = kT5Size * (1 + 3 + 2 + kTagWidths[5]);
+  const std::uint64_t t6_bits = kT6Size * (1 + 3 + 2 + kTagWidths[6]);
 
   const std::uint64_t tage_bits =
       t1_bits + t2_bits + t3_bits + t4_bits + t5_bits + t6_bits;
@@ -827,8 +850,11 @@ std::uint64_t PredictorOne::StorageBits() const {
   // Useful bit reset counter (from guide)
   const std::uint64_t reset_counter_bits = 20;
 
+  // Dynamic chooser/threshold state used to make future predictions.
+  const std::uint64_t adaptive_state_bits = 4 + 5 + 6;
+
   return sc_bits + loop_bits + btb_bits + base_bits + tage_bits + history_bits +
-         reset_counter_bits;
+         reset_counter_bits + adaptive_state_bits;
 }
 
 const PredictorMetrics &PredictorOne::Metrics() const { return metrics_; }

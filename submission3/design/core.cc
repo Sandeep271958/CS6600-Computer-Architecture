@@ -220,6 +220,10 @@ void Core::Execute() {
       speculation_control_->RemoveYoungerCheckpoints(result.sequence);
       branch_prediction_->RecordSquash(report.fetches, pipeline_operations,
                                        report.completions, report.data_requests);
+      if (!recovery_recorded_this_cycle_) {
+        branch_prediction_->RecordRecoveryCycle();
+        recovery_recorded_this_cycle_ = true;
+      }
 
       // Squash IF/ID only if it holds a younger mis-speculated instruction.
       // Set both current and next so the latch doesn't survive commit.
@@ -255,23 +259,44 @@ void Core::Decode() {
 
     target_unit = decode_result.unit;
 
-    // Observe the decoded instruction. Returns true if the predictor incorrectly
-    // identified this non-branch as a branch (false branch). Redirect to pc+4
-    // and squash all younger work immediately.
-    bool false_branch = branch_prediction_->ObserveInstruction(if_id_.fetched.instruction, if_id_.fetched.predictions);
-    if (false_branch) {
-      next_pc_ = if_id_.fetched.instruction.pc + 4;
-      machine_->InvalidateFetchesAfter(if_id_.fetched.sequence);
-      if_id_consumed_ = true;
-      next_if_id_.valid = false;
-      next_fetch_stopped_ = false;
-      snapshot.action = "DISPATCH"; // consumed, not stalled
+    // Observe each dynamic instruction exactly once.  Decode can stall for
+    // many cycles, but predictor observation is an accepted-event metric, not
+    // a per-cycle metric.
+    bool false_branch = false;
+    if (!if_id_.prediction_observed) {
+      false_branch = branch_prediction_->ObserveInstruction(
+          if_id_.fetched.instruction, if_id_.fetched.predictions);
+      next_if_id_.prediction_observed = true;
     }
 
-    if (!false_branch) {
+    // A false BTB hit redirects and squashes younger work, but the current
+    // instruction is a real ordinary instruction and must still proceed
+    // through the normal hazard/dispatch path below.
+    if (false_branch) {
+      next_pc_ = if_id_.fetched.instruction.pc + 4;
+      control_recognized_this_cycle_ = true;
 
-      HazardResult hazard_result = hazard_control_->Check(machine_, if_id_.fetched.sequence, if_id_.fetched.instruction,
-                                                          decode_result.writes_register);
+      SquashReport report = machine_->SquashAfter(if_id_.fetched.sequence);
+      std::uint64_t pipeline_operations = 0;
+      for (std::size_t i = 0; i < pipelines_.size(); ++i) {
+        pipeline_operations +=
+            pipelines_[i]->SquashAfter(if_id_.fetched.sequence);
+        consume_output_[i] = false;
+      }
+      speculation_control_->RemoveYoungerCheckpoints(
+          if_id_.fetched.sequence);
+      branch_prediction_->RecordSquash(report.fetches, pipeline_operations,
+                                       report.completions,
+                                       report.data_requests);
+      if (!recovery_recorded_this_cycle_) {
+        branch_prediction_->RecordRecoveryCycle();
+        recovery_recorded_this_cycle_ = true;
+      }
+      next_fetch_stopped_ = false;
+    }
+
+    HazardResult hazard_result = hazard_control_->Check(machine_, if_id_.fetched.sequence, if_id_.fetched.instruction,
+                                                        decode_result.writes_register);
 
       if (!machine_->CompletionQueueHasCapacity()) {
         machine_->RecordCpuStall(CpuStallReason::kCompletionQueueFull);
@@ -294,6 +319,8 @@ void Core::Decode() {
           snapshot.action = "STALL";
           next_fetch_stopped_ = true;
         } else {
+          const bool dispatch_is_speculative =
+              speculation_control_->IsSpeculative(if_id_.fetched.sequence);
 
           if (!target_pipeline->CanAccept(current_boundary_,
                                           consume_output_[static_cast<std::size_t>(decode_result.unit)])) {
@@ -329,6 +356,10 @@ void Core::Decode() {
                 next_if_id_.valid = false;
                 next_fetch_stopped_ = false;
 
+                if (dispatch_is_speculative) {
+                  branch_prediction_->RecordSpeculativeDispatch();
+                }
+
                 if (target_unit == pipesim::ExecutionUnitKind::kControl) {
                   auto opcode = if_id_.fetched.instruction.opcode;
 
@@ -358,7 +389,8 @@ void Core::Decode() {
                     cp.predicted_next_pc = if_id_.fetched.predictions.next_pc;
                     cp.predictions = if_id_.fetched.predictions;
                     speculation_control_->AddCheckpoint(cp);
-                    branch_prediction_->RecordSpeculativeDispatch();
+                    branch_prediction_->RecordSpeculationDepth(
+                        speculation_control_->CheckpointCount());
                   }
                 }
 
@@ -381,7 +413,6 @@ void Core::Decode() {
           }
         } // end CanDispatch else
       }
-    } // end !false_branch
   }
 
   for (std::size_t i = 0; i < pipelines_.size(); ++i) {
@@ -403,6 +434,7 @@ void Core::Fetch() {
       next_if_id_.fetched = fetched;
       next_if_id_.decode = main_control_->Decode(fetched.instruction);
       next_if_id_.control_recognized = false;
+      next_if_id_.prediction_observed = false;
       machine_->ConsumeFetched();
       snapshot.action = "ACCEPTED";
     }
@@ -449,6 +481,7 @@ void Core::BeginCycle() {
   consume_output_.fill(false);
   if_id_consumed_ = false;
   control_recognized_this_cycle_ = false;
+  recovery_recorded_this_cycle_ = false;
   pipelines_operated_ = false;
   cycle_begun_ = true;
 }
