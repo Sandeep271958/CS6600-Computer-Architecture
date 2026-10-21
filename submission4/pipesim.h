@@ -63,6 +63,11 @@ namespace pipesim {
 
         std::uint64_t information = 0;
 
+        // Captured at prediction time for PA3 predictor training after history changes.
+        std::uint64_t tage_indices = 0;
+        std::uint64_t tage_tags = 0;
+        std::uint8_t tage_provider_context = 0;
+
     };
 
     struct BranchPredictionSet {

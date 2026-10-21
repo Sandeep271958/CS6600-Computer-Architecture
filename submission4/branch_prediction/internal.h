@@ -7,15 +7,11 @@
 
 namespace pipesim {
 
-    class BranchPredictionSystem::Impl {
-
-        public:   std::array<std::unique_ptr<BranchPredictor>, 3> predictors;
-
-        std::size_t selected_predictor = 0;
-
-        SpeculationMetrics metrics;
-
-    };
+class BranchPredictionSystem::Impl {
+ public:
+  std::array<std::unique_ptr<BranchPredictor>, 3> predictors;
+  std::size_t selected_predictor = 0;
+  SpeculationMetrics metrics;
+};
 
 }
-
