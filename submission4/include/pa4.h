@@ -176,6 +176,8 @@ namespace multicore {
 
         Packet request;
 
+        std::set<int> pending_snoops;
+
         std::set<int> pending_acknowledgements;
 
         std::string phase="idle";
@@ -518,4 +520,3 @@ namespace multicore {
     }
 
 }
-
