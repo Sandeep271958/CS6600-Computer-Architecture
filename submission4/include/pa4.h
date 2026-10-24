@@ -162,6 +162,10 @@ namespace multicore {
 
         std::optional<uint32_t> evicted_line_address;
 
+        std::optional<CacheLineData> evicted_line_data;
+
+        uint64_t evicted_line_transaction_id=0;
+
     };
 
     struct DirectoryEntry {
