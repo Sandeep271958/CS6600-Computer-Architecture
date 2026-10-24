@@ -73,6 +73,11 @@ bool accept_cache_request(MulticoreSystem& system, int core_id, const MemoryRequ
         uint32_t victim_address = entry.tag;
         int victim_home = system.home(victim_address);
 
+        if (victim_needed && entry.state == CacheState::M &&
+            cache.evicted_line_address.has_value()) {
+            return false;
+        }
+
         // Preflight capacity checks before mutating state or emitting events
         if (victim_needed) {
             MessageType victim_msg = (entry.state == CacheState::M) ? MessageType::PutM : MessageType::PutS;
@@ -112,6 +117,8 @@ bool accept_cache_request(MulticoreSystem& system, int core_id, const MemoryRequ
         if (victim_needed) {
             if (entry.state == CacheState::M) {
                 cache.evicted_line_address = victim_address;
+                cache.evicted_line_data = entry.data;
+                cache.evicted_line_transaction_id = request.id;
                 entry.transient = true;
                 system.event("cache." + std::to_string(core_id), "dirty_evictions", 1);
                 system.event("cache." + std::to_string(core_id), "writebacks_sent", 1);
@@ -145,11 +152,164 @@ bool accept_cache_request(MulticoreSystem& system, int core_id, const MemoryRequ
     return false;
 }
 
-bool handle_cache_message(MulticoreSystem& /* system */, int /* core_id */, const Packet& /* packet */) {
+bool handle_cache_message(MulticoreSystem& system, int core_id, const Packet& packet) {
     // PA4-COH-02: Handle grants, recalls, invalidations and eviction
     // acknowledgements. A false return must leave staged state unchanged and send
     // no messages.
-    not_implemented("PA4-COH-02");
+
+    PrivateCache& cache = system.next.caches[core_id];
+    int slot = system.slot(packet.line_address);
+    CacheLine& entry = cache.lines[slot];
+
+    // Case 1: Data Grant Installation (DataS or DataM)
+    if (packet.type == MessageType::DataS || packet.type == MessageType::DataM) {
+        if (!cache.pending.has_value() || cache.transaction_id != packet.transaction_id) {
+            // Has no pending value or the ID being processed is not that packet
+            // Must retry next cycle
+            return false;
+        }
+        if (system.line_address(cache.pending->address) != packet.line_address) {
+            return false;
+        }
+
+        if (!system.can_send(core_id, MessageType::GrantAck, 1))
+            return false;
+
+        const CacheLine previous_entry = entry;
+        entry.data = packet.data;
+        entry.state = packet.type == MessageType::DataM ? CacheState::M : CacheState::S;
+        entry.tag = packet.line_address;
+        entry.transient = false;
+
+        const MemoryRequest& req = *cache.pending;
+        int word_offset = (req.address % 64) / 4;
+        uint32_t result_val = 0;
+
+        if (req.operation == MemoryOperation::Load) {
+            result_val = packet.data[word_offset];
+        } else if (req.operation == MemoryOperation::Store) {
+            entry.data[word_offset] = req.value;
+        } else if (req.operation == MemoryOperation::Exchange) {
+            result_val = packet.data[word_offset];
+            entry.data[word_offset] = req.value;
+        }
+
+        Packet grant_ack = system.message(MessageType::GrantAck, core_id, packet.source, packet.line_address,
+                                          packet.transaction_id, {}, core_id);
+        if (!system.send(grant_ack)) {
+            entry = previous_entry;
+            return false;
+        }
+
+        // Complete only after applying the access and successfully sending its ack.
+        system.cache_complete(core_id, result_val);
+        return true;
+    }
+
+    // Case 2: Invalidate Messages (Inv)
+    if (packet.type == MessageType::Inv) {
+        if (!system.can_send(core_id, MessageType::Ack, 1))
+            return false;
+
+        const CacheLine previous_entry = entry;
+        if (entry.tag == packet.line_address && entry.state != CacheState::I) {
+            entry.state = CacheState::I;
+        }
+
+        Packet ack = system.message(MessageType::Ack, core_id, packet.source, packet.line_address,
+                                    packet.transaction_id, {}, packet.requester);
+        if (!system.send(ack)) {
+            entry = previous_entry;
+            return false;
+        }
+        system.event("cache." + std::to_string(core_id), "invalidations_received", 1);
+        if (previous_entry.tag == packet.line_address &&
+            previous_entry.state != CacheState::I) {
+            system.event("cache." + std::to_string(core_id), "invalidations_applied", 1);
+        }
+        system.event("cache." + std::to_string(core_id), "acks_sent", 1);
+        return true;
+    }
+
+    // Case 3: Recall Shared (RecallS)
+    if (packet.type == MessageType::RecallS) {
+        if (!system.can_send(core_id, MessageType::Ack, 1))
+            return false;
+
+        const bool matching_line =
+            entry.tag == packet.line_address && entry.state != CacheState::I;
+        const bool matching_victim =
+            cache.evicted_line_address == packet.line_address &&
+            cache.evicted_line_data.has_value();
+        CacheLineData dirty_data{};
+        if (matching_line) {
+            dirty_data = entry.data;
+        } else if (matching_victim) {
+            dirty_data = *cache.evicted_line_data;
+        }
+
+        Packet ack = system.message(MessageType::Ack, core_id, packet.source, packet.line_address,
+                                    packet.transaction_id, dirty_data, packet.requester);
+        const CacheLine previous_entry = entry;
+        if (matching_line && entry.state == CacheState::M)
+            entry.state = CacheState::S;
+        if (!system.send(ack)) {
+            entry = previous_entry;
+            return false;
+        }
+        system.event("cache." + std::to_string(core_id), "acks_sent", 1);
+        return true;
+    }
+
+    // Case 4: Recall Invalid (RecallI)
+    if (packet.type == MessageType::RecallI) {
+        if (!system.can_send(core_id, MessageType::Ack, 1))
+            return false;
+
+        const bool matching_line =
+            entry.tag == packet.line_address && entry.state != CacheState::I;
+        const bool matching_victim =
+            cache.evicted_line_address == packet.line_address &&
+            cache.evicted_line_data.has_value();
+        CacheLineData dirty_data{};
+
+        if (matching_line && entry.state == CacheState::M) {
+            dirty_data = entry.data;
+        } else if (matching_victim) {
+            dirty_data = *cache.evicted_line_data;
+        }
+
+        Packet ack = system.message(MessageType::Ack, core_id, packet.source, packet.line_address,
+                                    packet.transaction_id, dirty_data, packet.requester);
+
+        const CacheLine previous_entry = entry;
+        if (matching_line)
+            entry.state = CacheState::I;
+        if (!system.send(ack)) {
+            entry = previous_entry;
+            return false;
+        }
+        system.event("cache." + std::to_string(core_id), "acks_sent", 1);
+        return true;
+    }
+
+    // Case 5: Put Acknowledgement (PutAck)
+    if (packet.type == MessageType::PutAck) {
+        if (cache.evicted_line_address != packet.line_address ||
+            cache.evicted_line_transaction_id != packet.transaction_id) {
+            return true;
+        }
+
+        cache.evicted_line_address = std::nullopt;
+        cache.evicted_line_data = std::nullopt;
+        cache.evicted_line_transaction_id = 0;
+        if (entry.tag == packet.line_address && entry.transient) {
+            entry.state = CacheState::I;
+            entry.transient = false;
+        }
+        return true;
+    }
+    return false;
 }
 
 }  // namespace multicore
