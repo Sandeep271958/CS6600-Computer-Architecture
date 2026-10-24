@@ -43,13 +43,45 @@ namespace multicore {
     }
 
     std::optional<unsigned> select_router_input(
-        const std::vector<ArbitrationCandidate>& /* candidates */,
-        unsigned /* round_robin_cursor */,
-        const SystemConfig& /* configuration */) {
+        const std::vector<ArbitrationCandidate>& candidates,
+        unsigned round_robin_cursor,
+        const SystemConfig& configuration) {
 
-        // PA4-NOC-02: Implement round-robin and your policy. Return an eligible input index.
-        not_implemented("PA4-NOC-02");
+        if (candidates.empty()) {
+            return std::nullopt;
+        }
 
+        if (configuration.arbitration == "rr") {
+            // Round-robin selection: Find candidate with minimum cyclic distance from cursor modulo 15
+            unsigned best_input = candidates[0].input;
+            unsigned best_distance = (candidates[0].input - round_robin_cursor + 15) % 15;
+
+            for (size_t i = 1; i < candidates.size(); ++i) {
+                unsigned dist = (candidates[i].input - round_robin_cursor + 15) % 15;
+                if (dist < best_distance) {
+                    best_distance = dist;
+                    best_input = candidates[i].input;
+                }
+            }
+            return best_input;
+        } else {
+            // Custom arbitration: Prioritize message classes to prevent protocol deadlock
+            // Channel priority: Replies (channel 2) > Snoops (channel 1) > Requests (channel 0)
+            // Tie-breaker: Lowest input ID
+            int best_channel = -1;
+            unsigned best_input = candidates[0].input;
+
+            for (const auto& candidate : candidates) {
+                int ch = static_cast<int>(candidate.input % 3);
+                if (ch > best_channel) {
+                    best_channel = ch;
+                    best_input = candidate.input;
+                } else if (ch == best_channel && candidate.input < best_input) {
+                    best_input = candidate.input;
+                }
+            }
+            return best_input;
+        }
     }
 
 }
