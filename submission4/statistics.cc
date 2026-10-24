@@ -2,14 +2,17 @@
 namespace multicore {
 
     void count_event(
-        MulticoreSystem& /* system */,
-        const std::string& /* component */,
-        const std::string& /* event */,
-        uint64_t /* amount */) {
+        MulticoreSystem& system,
+        const std::string& component,
+        const std::string& event,
+        uint64_t amount) {
 
-        // PA4-COUNT-01: Update the declared counters for each accepted event.
-        not_implemented("PA4-COUNT-01");
-
+        std::string key = component + "." + event;
+        if (event.size() >= 4 && event.rfind("_max") == event.size() - 4) {
+            system.counters.maximum(key, amount);
+        } else {
+            system.counters.add(key, amount);
+        }
     }
 
     void sample_occupancy_and_stalls(MulticoreSystem& /* system */) {
