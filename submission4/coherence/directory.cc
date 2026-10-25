@@ -102,7 +102,10 @@ namespace multicore {
 
             if (entry.phase == "gets_recall_wait") {
                 entry.data = packet.data;
+                entry.sharer_transaction_ids[packet.source] =
+                    entry.owner_transaction_id;
                 entry.owner = -1;
+                entry.owner_transaction_id = 0;
                 entry.state = CacheState::S;
                 entry.sharers.insert(packet.source);
                 if (entry.pending_acknowledgements.empty()) {
@@ -111,13 +114,16 @@ namespace multicore {
             } else if (entry.phase == "getm_recall_wait") {
                 entry.data = packet.data;
                 entry.owner = -1;
+                entry.owner_transaction_id = 0;
                 entry.sharers.erase(packet.source);
+                entry.sharer_transaction_ids.erase(packet.source);
                 entry.state = entry.sharers.empty() ? CacheState::I : CacheState::S;
                 if (entry.pending_acknowledgements.empty()) {
                     entry.phase = "getm_grant";
                 }
             } else {
                 entry.sharers.erase(packet.source);
+                entry.sharer_transaction_ids.erase(packet.source);
                 if (entry.pending_snoops.empty() &&
                     entry.pending_acknowledgements.empty()) {
                     entry.state = entry.sharers.empty() ? CacheState::I : CacheState::S;
@@ -183,7 +189,8 @@ namespace multicore {
                                       : "getm_invalidate_send";
                 }
             } else if (request.type == MessageType::PutM) {
-                if (entry.state == CacheState::M && entry.owner == request.source) {
+                if (entry.state == CacheState::M && entry.owner == request.source &&
+                    request.transaction_id >= entry.owner_transaction_id) {
                     entry.data = request.data;
                     entry.phase = "putm_llc_start";
                 } else {
@@ -311,12 +318,16 @@ namespace multicore {
             if (exclusive) {
                 entry.state = CacheState::M;
                 entry.owner = requester;
+                entry.owner_transaction_id = request.transaction_id;
                 entry.sharers.clear();
+                entry.sharer_transaction_ids.clear();
                 count_event(system, component, "ownership_grants", 1);
             } else {
                 entry.state = CacheState::S;
                 entry.owner = -1;
+                entry.owner_transaction_id = 0;
                 entry.sharers.insert(requester);
+                entry.sharer_transaction_ids[requester] = request.transaction_id;
             }
             entry.phase = "grant_ack_wait";
             return;
@@ -330,12 +341,20 @@ namespace multicore {
                 return;
             }
             if (request.type == MessageType::PutM &&
-                entry.state == CacheState::M && entry.owner == request.source) {
+                entry.state == CacheState::M && entry.owner == request.source &&
+                request.transaction_id >= entry.owner_transaction_id) {
                 entry.owner = -1;
+                entry.owner_transaction_id = 0;
                 entry.sharers.clear();
+                entry.sharer_transaction_ids.clear();
                 entry.state = CacheState::I;
             } else if (request.type == MessageType::PutS) {
-                entry.sharers.erase(request.source);
+                auto sharer = entry.sharer_transaction_ids.find(request.source);
+                if (sharer != entry.sharer_transaction_ids.end() &&
+                    request.transaction_id >= sharer->second) {
+                    entry.sharers.erase(request.source);
+                    entry.sharer_transaction_ids.erase(sharer);
+                }
                 if (entry.sharers.empty() && entry.state == CacheState::S) {
                     entry.state = CacheState::I;
                 }
