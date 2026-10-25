@@ -174,7 +174,11 @@ namespace multicore {
 
         int owner=-1;
 
+        uint64_t owner_transaction_id=0;
+
         std::set<int> sharers;
+
+        std::map<int,uint64_t> sharer_transaction_ids;
 
         bool active=false;
 
