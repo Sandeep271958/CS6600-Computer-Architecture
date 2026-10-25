@@ -2,12 +2,15 @@
 """Public functional tests; creates all generated files in a temporary directory."""
 import csv
 import json
+import os
 import pathlib
 import random
 import subprocess
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+PA4 = pathlib.Path(os.environ.get("PA4_EXECUTABLE", ROOT / "pa4"))
+PA4_NOC = pathlib.Path(os.environ.get("PA4_NOC_EXECUTABLE", ROOT / "pa4-noc"))
 
 
 def run_case(directory, name, text, model="SC", overrides="", max_cycles=20000):
@@ -18,7 +21,7 @@ def run_case(directory, name, text, model="SC", overrides="", max_cycles=20000):
     workload.write_text(text)
     output = directory / name
     result = subprocess.run(
-        [str(ROOT / "pa4"), "trace", str(config), str(workload),
+        [str(PA4), "trace", str(config), str(workload),
          str(output), str(max_cycles)],
         cwd=ROOT, text=True, capture_output=True)
     if result.returncode:
@@ -154,7 +157,7 @@ def main():
             traffic.write_text("0 0 1 GetS 0\n100 0 2 GetS 0\n200 0 8 GetS 0\n300 0 8 DataM 0\n")
             output = directory / "network"
             completed = subprocess.run(
-                [str(ROOT / "pa4-noc"), "configs/default.cfg", str(traffic), str(output), "1000"],
+                [str(PA4_NOC), "configs/default.cfg", str(traffic), str(output), "1000"],
                 cwd=ROOT, capture_output=True, text=True)
             assert completed.returncode == 0, completed.stderr
             injected, delivered = {}, {}
@@ -172,7 +175,7 @@ def main():
         try:
             output = directory / "cpu"
             result = subprocess.run(
-                [str(ROOT / "pa4"), "cpu", "configs/default.cfg", "configs/pa3.json",
+                [str(PA4), "cpu", "configs/default.cfg", "configs/pa3.json",
                  "workloads/programs.txt", str(output), "5000"],
                 cwd=ROOT, capture_output=True, text=True)
             assert result.returncode == 0, result.stderr
@@ -192,7 +195,7 @@ def main():
                                   .replace("memory_model SC", "memory_model " + model))
                 output = directory / ("lock_" + model)
                 completed = subprocess.run(
-                    [str(ROOT / "pa4"), "cpu", str(config), "configs/pa3.json",
+                    [str(PA4), "cpu", str(config), "configs/pa3.json",
                      "workloads/lock_programs.txt", str(output), "30000"],
                     cwd=ROOT, capture_output=True, text=True)
                 assert completed.returncode == 0, completed.stderr
