@@ -78,10 +78,13 @@ bool accept_cache_request(MulticoreSystem& system, int core_id, const MemoryRequ
             return false;
         }
 
-        // Preflight capacity checks before mutating state or emitting events
+        // Eviction and acquisition are sent in separate cycles so a one-entry
+        // injection queue can make progress.
         if (victim_needed) {
-            MessageType victim_msg = (entry.state == CacheState::M) ? MessageType::PutM : MessageType::PutS;
-            if (!system.can_send(core_id, victim_msg, 2)) {
+            MessageType victim_msg = (entry.state == CacheState::M)
+                                         ? MessageType::PutM
+                                         : MessageType::PutS;
+            if (!system.can_send(core_id, victim_msg, 1)) {
                 return false;
             }
         } else {
@@ -90,8 +93,6 @@ bool accept_cache_request(MulticoreSystem& system, int core_id, const MemoryRequ
             }
         }
 
-        // Preflight accounts for both packets in the same request channel, so
-        // neither send can fail for capacity during this callback.
         if (victim_needed) {
             if (entry.state == CacheState::M) {
                 Packet put_pkt = system.message(MessageType::PutM, core_id, victim_home, victim_address, request.id,
@@ -106,20 +107,22 @@ bool accept_cache_request(MulticoreSystem& system, int core_id, const MemoryRequ
                     return false;
                 }
             }
-        }
-
-        Packet acq_pkt = system.message(acq_type, core_id, home_tile, line_address, request.id, {}, core_id);
-        if (!system.send(acq_pkt)) {
-            return false;
+        } else {
+            Packet acq_pkt = system.message(acq_type, core_id, home_tile, line_address, request.id, {}, core_id);
+            if (!system.send(acq_pkt)) {
+                return false;
+            }
         }
 
         // All sends succeeded; only now commit cache state and acceptance events.
         if (victim_needed) {
+            cache.evicted_line_address = victim_address;
+            cache.evicted_line_data = entry.state == CacheState::M
+                                          ? std::optional<CacheLineData>(entry.data)
+                                          : std::nullopt;
+            cache.evicted_line_transaction_id = request.id;
+            entry.transient = true;
             if (entry.state == CacheState::M) {
-                cache.evicted_line_address = victim_address;
-                cache.evicted_line_data = entry.data;
-                cache.evicted_line_transaction_id = request.id;
-                entry.transient = true;
                 system.event("cache." + std::to_string(core_id), "dirty_evictions", 1);
                 system.event("cache." + std::to_string(core_id), "writebacks_sent", 1);
             } else if (entry.state == CacheState::S) {
@@ -145,7 +148,7 @@ bool accept_cache_request(MulticoreSystem& system, int core_id, const MemoryRequ
         // Move Request to Pending
         cache.pending = request;
         cache.transaction_id = request.id;
-        cache.phase = "waiting_data";
+        cache.phase = victim_needed ? "waiting_putack" : "waiting_data";
         return true;
     }
 
@@ -300,12 +303,33 @@ bool handle_cache_message(MulticoreSystem& system, int core_id, const Packet& pa
             return true;
         }
 
+        if (cache.phase == "waiting_putack" && cache.pending.has_value()) {
+            const MemoryRequest& request = *cache.pending;
+            const uint32_t line_address = system.line_address(request.address);
+            const MessageType acquisition =
+                request.operation == MemoryOperation::Load ? MessageType::GetS
+                                                          : MessageType::GetM;
+            if (!system.can_send(core_id, acquisition, 1)) {
+                return false;
+            }
+
+            Packet acquire = system.message(acquisition, core_id,
+                                            system.home(line_address), line_address,
+                                            request.id, {}, core_id);
+            if (!system.send(acquire)) {
+                return false;
+            }
+        }
+
         cache.evicted_line_address = std::nullopt;
         cache.evicted_line_data = std::nullopt;
         cache.evicted_line_transaction_id = 0;
         if (entry.tag == packet.line_address && entry.transient) {
             entry.state = CacheState::I;
             entry.transient = false;
+        }
+        if (cache.phase == "waiting_putack") {
+            cache.phase = "waiting_data";
         }
         return true;
     }
