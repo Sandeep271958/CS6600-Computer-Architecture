@@ -189,6 +189,7 @@ namespace multicore {
                                       : "getm_invalidate_send";
                 }
             } else if (request.type == MessageType::PutM) {
+                // A delayed release is acknowledged but must not replace a newer owner.
                 if (entry.state == CacheState::M && entry.owner == request.source &&
                     request.transaction_id >= entry.owner_transaction_id) {
                     entry.data = request.data;

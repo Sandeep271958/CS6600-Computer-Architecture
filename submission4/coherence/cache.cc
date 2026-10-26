@@ -78,8 +78,8 @@ bool accept_cache_request(MulticoreSystem& system, int core_id, const MemoryRequ
             return false;
         }
 
-        // Eviction and acquisition are sent in separate cycles so a one-entry
-        // injection queue can make progress.
+        // Release the victim first; the acquisition waits for PutAck so even a
+        // one-entry injection queue can make progress.
         if (victim_needed) {
             MessageType victim_msg = (entry.state == CacheState::M)
                                          ? MessageType::PutM
@@ -116,6 +116,7 @@ bool accept_cache_request(MulticoreSystem& system, int core_id, const MemoryRequ
 
         // All sends succeeded; only now commit cache state and acceptance events.
         if (victim_needed) {
+            // Keep dirty bytes available for recalls until the home confirms release.
             cache.evicted_line_address = victim_address;
             cache.evicted_line_data = entry.state == CacheState::M
                                           ? std::optional<CacheLineData>(entry.data)
@@ -313,6 +314,7 @@ bool handle_cache_message(MulticoreSystem& system, int core_id, const Packet& pa
                 return false;
             }
 
+            // Do not consume PutAck until the replacement request can be queued.
             Packet acquire = system.message(acquisition, core_id,
                                             system.home(line_address), line_address,
                                             request.id, {}, core_id);
